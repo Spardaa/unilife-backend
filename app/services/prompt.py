@@ -11,7 +11,8 @@ class PromptService:
 
     def __init__(self):
         # Get the prompts directory (relative to project root)
-        self.prompts_dir = Path(__file__).parent.parent / "prompts"
+        # __file__ is app/services/prompt.py, go up 3 levels to reach project root
+        self.prompts_dir = Path(__file__).parent.parent.parent / "prompts"
         self._cache: Dict[str, str] = {}
 
     def load_prompt(self, prompt_name: str, use_cache: bool = True) -> str:

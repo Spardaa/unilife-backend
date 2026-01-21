@@ -270,6 +270,11 @@ class ScheduleAgent:
 
             event_data = json.loads(content)
 
+            # Validate required fields
+            if not event_data.get("title"):
+                print(f"Error parsing event: missing title in LLM response: {content}")
+                return None
+
             # Add user_id and metadata
             event_data["user_id"] = user_id
             event_data["status"] = EventStatus.PENDING.value
