@@ -577,6 +577,29 @@ def register_all_tools():
         func=tool_get_routine_stats
     )
 
+    # ============ Time Parsing Tools ============
+
+    # 19. 智能时间解析工具
+    tool_registry.register(
+        name="parse_time",
+        description="智能解析自然语言时间表达式。支持精确时间（明天下午3点）、相对日期（后天、下周三）、模糊时间（傍晚、上午晚些时候）、时间范围（本周三到周五）等多种表达方式。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "时间文本（如'明天下午3点'、'下周三'、'傍晚'、'本周五到周日'）"
+                },
+                "reference_date": {
+                    "type": "string",
+                    "description": "参考日期 ISO 格式，如 '2026-01-21T15:00:00'（可选，默认为当前时间）"
+                }
+            },
+            "required": ["text"]
+        },
+        func=tool_parse_time
+    )
+
 
 # ============ Tool 实现函数 ============
 
@@ -1103,6 +1126,48 @@ async def tool_get_routine_stats(
         return {
             "success": False,
             "error": "Routine not found"
+        }
+
+
+# ============ Time Parsing Tools ============
+
+async def tool_parse_time(
+    text: str,
+    reference_date: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    智能解析时间表达式
+
+    支持多种自然语言时间表达方式，包括精确时间、相对日期、模糊时间、时间范围等。
+
+    Args:
+        text: 时间文本（如"明天下午3点"、"下周三"、"傍晚"、"本周五到周日"）
+        reference_date: 参考日期 ISO 格式（可选，默认为当前时间）
+
+    Returns:
+        解析结果，包含类型、时间、置信度、说明等信息
+    """
+    from app.services.time_parser import parse_time_expression
+    from datetime import datetime
+
+    ref_date = None
+    if reference_date:
+        ref_date = datetime.fromisoformat(reference_date)
+
+    result = parse_time_expression(text, ref_date)
+
+    if result["success"]:
+        return {
+            "success": True,
+            "parsed": result,
+            "message": f"[TIME] 解析成功：{result.get('explanation', text)}"
+        }
+    else:
+        return {
+            "success": False,
+            "error": result.get("error", "解析失败"),
+            "suggestions": result.get("suggestions", []),
+            "message": f"[TIME] 无法识别时间表达：{text}"
         }
 
 
