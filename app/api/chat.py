@@ -4,15 +4,17 @@ Chat API - Conversational interface for Jarvis (重构版)
 """
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException
+import json
 
-from app.schemas.chat import ChatRequest, ChatResponse, ActionResult
+from app.schemas.chat import (
+    ChatRequest, ChatResponse, ActionResult,
+    CreateConversationRequest, ConversationResponse, MessageResponse
+)
 from app.agents.jarvis import jarvis_agent
 from app.services.snapshot import snapshot_manager
+from app.services.conversation_service import conversation_service
 
 router = APIRouter()
-
-# Store conversation history (in production, use Redis or database)
-conversation_history: Dict[str, List[Dict[str, str]]] = {}
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -24,23 +26,82 @@ async def chat(request: ChatRequest):
     - 使用 Jarvis Agent（LLM + Tools）
     - 自动推理和工具调用
     - 支持多步对话和上下文理解
+    - 对话历史持久化到数据库
+
+    如果提供 conversation_id，继续现有对话
+    如果不提供，创建新对话
     """
-    # Get conversation history for this user
-    user_history = conversation_history.get(request.user_id, [])
+    # 获取或创建对话
+    conversation_id = request.conversation_id
+    if conversation_id:
+        conversation = conversation_service.get_conversation(conversation_id)
+        if not conversation:
+            # 对话不存在，创建新的
+            conversation = conversation_service.create_conversation(
+                user_id=request.user_id,
+                title=request.message[:50]  # 用第一条消息的前50字符作为标题
+            )
+            conversation_id = conversation.id
+    else:
+        # 创建新对话
+        conversation = conversation_service.create_conversation(
+            user_id=request.user_id,
+            title=request.message[:50]  # 用第一条消息的前50字符作为标题
+        )
+        conversation_id = conversation.id
+
+    # 从数据库获取智能上下文
+    context_messages = conversation_service.get_context_for_llm(
+        conversation_id=conversation_id,
+        max_messages=20,
+        max_tokens=8000
+    )
+
+    # 保存用户消息
+    conversation_service.add_message(
+        conversation_id=conversation_id,
+        role="user",
+        content=request.message
+    )
 
     try:
         # Call Jarvis Agent
         result = await jarvis_agent.chat(
             user_message=request.message,
             user_id=request.user_id,
-            conversation_history=user_history
+            conversation_history=context_messages
         )
 
         reply = result["reply"]
         actions = result.get("actions", [])
         tool_calls = result.get("tool_calls", [])
-        updated_history = result.get("conversation_history", user_history)
         suggestions = result.get("suggestions")
+
+        # 保存助手回复（不含 tool_calls，因为后面会单独保存）
+        assistant_msg_id = conversation_service.add_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=reply
+        ).id
+
+        # 保存 tool_calls 和 tool 消息
+        if tool_calls:
+            # 更新 assistant 消息，添加 tool_calls
+            import json
+            from app.services.conversation_service import Message
+            db = conversation_service.get_session()
+            try:
+                msg = db.query(Message).filter(Message.id == assistant_msg_id).first()
+                if msg:
+                    msg.tool_calls = json.dumps(tool_calls)
+                    db.commit()
+            finally:
+                db.close()
+
+            # 保存每个 tool 的调用结果（如果有的话）
+            # 注意：tool_calls 中的结果已经在 jarvis_agent 中执行过了
+            # 这里我们需要从 result 中获取这些结果
+            # 为了简化，我们假设 result["actions"] 中包含了相关信息
 
         # Create snapshot if there were modifying actions
         snapshot_id = None
@@ -75,9 +136,6 @@ async def chat(request: ChatRequest):
                 # Snapshot creation failure shouldn't break the chat
                 print(f"[Chat API] Warning: Failed to create snapshot: {e}")
 
-        # Update conversation history
-        conversation_history[request.user_id] = updated_history
-
         # Convert actions to schema format
         action_responses = [
             ActionResult(
@@ -105,7 +163,8 @@ async def chat(request: ChatRequest):
             reply=reply,
             actions=action_responses,
             snapshot_id=snapshot_id,
-            suggestions=suggestion_responses
+            suggestions=suggestion_responses,
+            conversation_id=conversation_id  # 返回对话ID，前端下次请求时带上
         )
 
     except Exception as e:
@@ -113,10 +172,18 @@ async def chat(request: ChatRequest):
         import traceback
         traceback.print_exc()
 
+        # 即使出错也保存错误消息
+        conversation_service.add_message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=f"抱歉，处理您的请求时出现了错误：{str(e)}。请稍后重试。"
+        )
+
         return ChatResponse(
             reply=f"抱歉，处理您的请求时出现了错误：{str(e)}。请稍后重试。",
             actions=[],
-            snapshot_id=None
+            snapshot_id=None,
+            conversation_id=conversation_id
         )
 
 
@@ -136,22 +203,109 @@ async def chat_feedback(request: Dict[str, Any]):
     }
 
 
-@router.get("/chat/history")
-async def get_chat_history(user_id: str, limit: int = 50):
-    """Get conversation history for a user"""
-    history = conversation_history.get(user_id, [])
-    return {
-        "user_id": user_id,
-        "history": history[-limit:]
-    }
+# Conversation Management Endpoints
+
+@router.post("/conversations", response_model=ConversationResponse)
+async def create_conversation(request: CreateConversationRequest):
+    """创建新对话会话"""
+    conversation = conversation_service.create_conversation(
+        user_id=request.user_id,
+        title=request.title
+    )
+    return ConversationResponse(
+        id=conversation.id,
+        user_id=conversation.user_id,
+        title=conversation.title,
+        created_at=conversation.created_at.isoformat(),
+        updated_at=conversation.updated_at.isoformat(),
+        message_count=conversation.message_count
+    )
 
 
-@router.delete("/chat/history")
-async def clear_chat_history(user_id: str):
-    """Clear conversation history for a user"""
-    if user_id in conversation_history:
-        conversation_history[user_id] = []
-    return {
-        "status": "success",
-        "message": "对话历史已清除。"
-    }
+@router.get("/conversations", response_model=List[ConversationResponse])
+async def list_conversations(
+    user_id: str,
+    limit: int = 50,
+    offset: int = 0
+):
+    """获取用户的对话列表"""
+    conversations = conversation_service.list_conversations(
+        user_id=user_id,
+        limit=limit,
+        offset=offset
+    )
+    return [
+        ConversationResponse(
+            id=c.id,
+            user_id=c.user_id,
+            title=c.title,
+            created_at=c.created_at.isoformat(),
+            updated_at=c.updated_at.isoformat(),
+            message_count=c.message_count
+        )
+        for c in conversations
+    ]
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationResponse)
+async def get_conversation(conversation_id: str):
+    """获取对话详情"""
+    conversation = conversation_service.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return ConversationResponse(
+        id=conversation.id,
+        user_id=conversation.user_id,
+        title=conversation.title,
+        created_at=conversation.created_at.isoformat(),
+        updated_at=conversation.updated_at.isoformat(),
+        message_count=conversation.message_count
+    )
+
+
+@router.get("/conversations/{conversation_id}/messages", response_model=List[MessageResponse])
+async def get_conversation_messages(
+    conversation_id: str,
+    limit: int = 100,
+    offset: int = 0
+):
+    """获取对话的消息列表"""
+    messages = conversation_service.get_messages(
+        conversation_id=conversation_id,
+        limit=limit,
+        offset=offset
+    )
+    return [
+        MessageResponse(
+            id=m.id,
+            conversation_id=m.conversation_id,
+            role=m.role,
+            content=m.content,
+            created_at=m.created_at.isoformat()
+        )
+        for m in messages
+    ]
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """删除对话"""
+    success = conversation_service.delete_conversation(conversation_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"status": "success", "message": "对话已删除"}
+
+
+@router.put("/conversations/{conversation_id}/title")
+async def update_conversation_title(
+    conversation_id: str,
+    title: str
+):
+    """更新对话标题"""
+    success = conversation_service.update_conversation_title(
+        conversation_id=conversation_id,
+        title=title
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {"status": "success", "message": "标题已更新"}

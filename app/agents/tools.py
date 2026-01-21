@@ -600,6 +600,218 @@ def register_all_tools():
         func=tool_parse_time
     )
 
+    # ============ New Routine Tools (Three-Layer Model) ============
+
+    # 20. 创建 Routine 模板工具（支持序列）
+    tool_registry.register(
+        name="create_routine_template",
+        description="创建新的长期重复日程模板（Routine），支持序列循环。例如：每周一到五健身，训练顺序是'胸肩背'循环。会自动管理每次应该训练的内容。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Routine 名称（如'健身计划'）"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "详细描述（可选）"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "分类（fitness, study, work, life等）"
+                },
+                "frequency": {
+                    "type": "string",
+                    "enum": ["daily", "weekly", "monthly"],
+                    "description": "重复频率"
+                },
+                "days": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "当frequency=weekly时，指定星期几（0=周一, 6=周日）"
+                },
+                "time": {
+                    "type": "string",
+                    "description": "时间（如'18:00'）"
+                },
+                "sequence": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "序列列表（如['胸', '肩', '背']）"
+                },
+                "is_flexible": {
+                    "type": "boolean",
+                    "description": "是否允许灵活调整（默认True）"
+                }
+            },
+            "required": ["user_id", "name", "frequency"]
+        },
+        func=tool_create_routine_template
+    )
+
+    # 21. 获取事件（包含 Routine 实例）
+    tool_registry.register(
+        name="get_events_with_routines",
+        description="获取指定时间范围内的事件（普通事件 + Routine实例）。Routine实例会标记为'长期'并显示序列项（如'健身计划 - 胸部训练'）。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "开始日期（YYYY-MM-DD）"
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "结束日期（YYYY-MM-DD）"
+                }
+            },
+            "required": ["user_id", "start_date", "end_date"]
+        },
+        func=tool_get_events_with_routines
+    )
+
+    # 22. 操作 Routine 实例工具
+    tool_registry.register(
+        name="handle_routine_instance",
+        description="操作某个 Routine 实例（取消、延期、完成等）。支持智能处理序列关联，例如：取消周二的训练，序列不前进，下次还是练同样的内容。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": "Routine 实例ID"
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["cancel", "complete", "reschedule", "skip"],
+                    "description": "操作类型"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "原因（可选，如'急事'、'身体不适'）"
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "详细说明（可选）"
+                },
+                "actual_date": {
+                    "type": "string",
+                    "description": "实际日期（如果延期，YYYY-MM-DD）"
+                },
+                "advance_sequence": {
+                    "type": "boolean",
+                    "description": "序列是否前进（默认true，设为false则下次还是同样的内容）"
+                }
+            },
+            "required": ["instance_id", "action"]
+        },
+        func=tool_handle_routine_instance
+    )
+
+    # 23. 获取 Routine 模板列表
+    tool_registry.register(
+        name="list_routine_templates",
+        description="列出用户的所有 Routine 模板（规则），显示每个模板的统计信息和序列配置。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "active_only": {
+                    "type": "boolean",
+                    "description": "是否只显示激活的（默认True）"
+                }
+            },
+            "required": ["user_id"]
+        },
+        func=tool_list_routine_templates
+    )
+
+    # 24. 获取 Routine 实例详情
+    tool_registry.register(
+        name="get_routine_instance_detail",
+        description="获取某个 Routine 实例的详细信息，包括执行历史、序列位置等。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "instance_id": {
+                    "type": "string",
+                    "description": "实例ID"
+                }
+            },
+            "required": ["instance_id"]
+        },
+        func=tool_get_routine_instance_detail
+    )
+
+    # ============ Enhanced Features Tools ============
+
+    # 25. 评估精力消耗工具
+    tool_registry.register(
+        name="evaluate_energy_consumption",
+        description="评估事件的精力消耗（体力+精神两个维度）。返回结构化评估结果，包括level（低/中/高）、score（0-10分）、description（自然语言描述）和factors（具体因素）。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "event_title": {
+                    "type": "string",
+                    "description": "事件标题"
+                },
+                "event_description": {
+                    "type": "string",
+                    "description": "事件描述（可选）"
+                },
+                "event_duration": {
+                    "type": "string",
+                    "description": "时长（可选）"
+                },
+                "event_location": {
+                    "type": "string",
+                    "description": "地点（可选）"
+                },
+                "user_profile": {
+                    "type": "object",
+                    "description": "用户画像信息（可选）"
+                }
+            },
+            "required": ["event_title"]
+        },
+        func=tool_evaluate_energy_consumption
+    )
+
+    # 26. 分析日程合理性工具
+    tool_registry.register(
+        name="analyze_schedule",
+        description="分析日程安排的合理性，检测连续高强度体力/精神消耗，提供优化建议。输入事件列表（需包含energy_consumption），返回分析结果和建议。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "事件列表（每个事件需包含 energy_consumption 信息）"
+                },
+                "user_context": {
+                    "type": "object",
+                    "description": "用户上下文（可选）"
+                }
+            },
+            "required": ["events"]
+        },
+        func=tool_analyze_schedule
+    )
+
 
 # ============ Tool 实现函数 ============
 
@@ -1168,6 +1380,298 @@ async def tool_parse_time(
             "error": result.get("error", "解析失败"),
             "suggestions": result.get("suggestions", []),
             "message": f"[TIME] 无法识别时间表达：{text}"
+        }
+
+
+# ============ New Routine Tools Implementation ============
+
+async def tool_create_routine_template(
+    user_id: str,
+    name: str,
+    frequency: str,
+    description: Optional[str] = None,
+    category: Optional[str] = None,
+    days: Optional[List[int]] = None,
+    time: Optional[str] = None,
+    sequence: Optional[List[str]] = None,
+    is_flexible: bool = True
+) -> Dict[str, Any]:
+    """
+    创建 Routine 模板（支持序列循环）
+
+    示例：
+    - "每周一到五健身，训练顺序是胸肩背循环"
+      → frequency="weekly", days=[0,1,2,3,4], sequence=["胸", "肩", "背"]
+    """
+    from app.services.routine_service import routine_service
+
+    # 构建重复规则
+    repeat_rule = {"frequency": frequency}
+    if days:
+        repeat_rule["days"] = days
+    if time:
+        repeat_rule["time"] = time
+
+    # 创建模板
+    template = routine_service.create_template(
+        user_id=user_id,
+        name=name,
+        description=description,
+        category=category,
+        repeat_rule=repeat_rule,
+        sequence=sequence,
+        is_flexible=is_flexible
+    )
+
+    result = template.to_dict()
+    result["sequence_info"] = {
+        "has_sequence": sequence is not None,
+        "sequence_length": len(sequence) if sequence else 0,
+        "current_position": 0,
+        "next_item": sequence[0] if sequence else None
+    }
+
+    return {
+        "success": True,
+        "template": result,
+        "message": f"[ROUTINE] 已创建长期日程：{name}" + (f"，序列：{' → '.join(sequence)}" if sequence else "")
+    }
+
+
+async def tool_get_events_with_routines(
+    user_id: str,
+    start_date: str,
+    end_date: str
+) -> Dict[str, Any]:
+    """
+    获取事件（普通 + Routine 实例）
+
+    返回统一格式的事件列表，Routine 实例会标记 is_routine=True
+    """
+    from app.services.routine_service import routine_service
+
+    events = routine_service.get_events_with_routines(
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date
+    )
+
+    # 统计
+    normal_count = sum(1 for e in events if not e.get("is_routine"))
+    routine_count = sum(1 for e in events if e.get("is_routine"))
+
+    return {
+        "success": True,
+        "events": events,
+        "count": len(events),
+        "normal_events": normal_count,
+        "routine_instances": routine_count,
+        "message": f"[EVENTS] {start_date} 至 {end_date}：共{len(events)}个日程（{normal_count}个普通，{routine_count}个长期）"
+    }
+
+
+async def tool_handle_routine_instance(
+    instance_id: str,
+    action: str,
+    reason: Optional[str] = None,
+    notes: Optional[str] = None,
+    actual_date: Optional[str] = None,
+    advance_sequence: bool = True
+) -> Dict[str, Any]:
+    """
+    操作 Routine 实例（取消、延期、完成等）
+
+    关键：通过 advance_sequence 控制序列是否前进
+    - 取消某次训练：advance_sequence=False，下次还是同样的内容
+    - 完成某次训练：advance_sequence=True，下次是序列中的下一个
+    """
+    from app.services.routine_service import routine_service
+
+    # 映射 action
+    action_map = {
+        "cancel": "cancelled",
+        "complete": "completed",
+        "reschedule": "rescheduled",
+        "skip": "skipped"
+    }
+
+    execution_action = action_map.get(action, action)
+
+    # 记录执行
+    execution = routine_service.record_execution(
+        instance_id=instance_id,
+        action=execution_action,
+        reason=reason,
+        notes=notes,
+        actual_date=actual_date,
+        sequence_advanced=advance_sequence
+    )
+
+    # 获取实例详情
+    instance = routine_service.get_instance(instance_id)
+
+    result = {
+        "success": True,
+        "action": action,
+        "execution": execution.to_dict(),
+        "sequence_advanced": advance_sequence
+    }
+
+    if instance:
+        result["instance"] = instance.to_dict()
+        result["message"] = f"[ROUTINE] 已{action}：{instance.template.name} ({instance.scheduled_date})"
+
+        if not advance_sequence and instance.sequence_item:
+            result["message"] += f"，序列未前进，下次还是{instance.sequence_item}"
+
+    return result
+
+
+async def tool_list_routine_templates(
+    user_id: str,
+    active_only: bool = True
+) -> Dict[str, Any]:
+    """列出用户的所有 Routine 模板"""
+    from app.services.routine_service import routine_service
+
+    templates = routine_service.list_templates(
+        user_id=user_id,
+        active_only=active_only
+    )
+
+    result_templates = []
+    for t in templates:
+        t_dict = t.to_dict()
+        # 添加序列信息
+        if t.sequence:
+            next_item = t.sequence[t.sequence_position % len(t.sequence)]
+            t_dict["next_sequence_item"] = next_item
+        result_templates.append(t_dict)
+
+    return {
+        "success": True,
+        "templates": result_templates,
+        "count": len(templates),
+        "message": f"[ROUTINE] 找到 {len(templates)} 个长期日程模板"
+    }
+
+
+async def tool_get_routine_instance_detail(instance_id: str) -> Dict[str, Any]:
+    """获取 Routine 实例详情"""
+    from app.services.routine_service import routine_service
+
+    instance = routine_service.get_instance(instance_id)
+    if not instance:
+        return {
+            "success": False,
+            "error": "Instance not found"
+        }
+
+    # 获取执行历史
+    executions = routine_service.get_executions(instance_id)
+
+    return {
+        "success": True,
+        "instance": instance.to_dict(),
+        "template": instance.template.to_dict(),
+        "executions": [e.to_dict() for e in executions],
+        "execution_count": len(executions),
+        "message": f"[ROUTINE] 实例详情：{instance.template.name} ({instance.scheduled_date}) - {instance.sequence_item or '常规'}"
+    }
+
+
+# ============ Enhanced Features Tools Implementation ============
+
+async def tool_evaluate_energy_consumption(
+    event_title: str,
+    event_description: Optional[str] = None,
+    event_duration: Optional[str] = None,
+    event_location: Optional[str] = None,
+    user_profile: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    评估事件的精力消耗（体力 + 精神）
+
+    用于分析事件在不同维度的精力消耗程度，帮助合理安排日程。
+
+    Args:
+        event_title: 事件标题
+        event_description: 事件描述
+        event_duration: 时长
+        event_location: 地点
+        user_profile: 用户画像（可选）
+
+    Returns:
+        精力消耗评估结果
+    """
+    from app.agents.energy_evaluator import energy_evaluator_agent
+
+    event_data = {
+        "title": event_title,
+        "description": event_description,
+        "duration": event_duration,
+        "location": event_location
+    }
+
+    context = {}
+    if user_profile:
+        context["user_profile"] = user_profile
+
+    try:
+        evaluation = await energy_evaluator_agent.evaluate(event_data, context)
+
+        return {
+            "success": True,
+            "evaluation": evaluation.model_dump(),
+            "message": f"[ENERGY] 精力评估完成：体力 {evaluation.physical.level}({evaluation.physical.score}分)，精神 {evaluation.mental.level}({evaluation.mental.score}分)"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"[ENERGY] 评估失败：{str(e)}"
+        }
+
+
+async def tool_analyze_schedule(
+    events: List[Dict[str, Any]],
+    user_context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    分析日程安排的合理性
+
+    检测连续高强度体力/精神消耗，提供优化建议。
+
+    Args:
+        events: 事件列表（每个事件需包含 energy_consumption）
+        user_context: 用户上下文（可选）
+
+    Returns:
+        分析结果和建议
+    """
+    from app.agents.smart_scheduler import smart_scheduler_agent
+
+    try:
+        # 先用快速检查
+        quick_result = await smart_scheduler_agent.quick_check(events)
+
+        # 如果有问题或有用户上下文，调用深度分析
+        if quick_result.get("has_issues") or user_context:
+            analysis = await smart_scheduler_agent.analyze_schedule(events, user_context)
+
+            return {
+                "success": True,
+                "analysis": analysis,
+                "message": analysis.get("message", "日程分析完成")
+            }
+        else:
+            return quick_result
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"[SCHEDULER] 分析失败：{str(e)}"
         }
 
 

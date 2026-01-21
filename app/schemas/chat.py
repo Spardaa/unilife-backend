@@ -15,6 +15,7 @@ class ChatRequest(BaseModel):
     """Request model for chat endpoint"""
     user_id: str = Field(..., description="User ID")
     message: str = Field(..., description="User's natural language message")
+    conversation_id: Optional[str] = Field(None, description="Conversation ID (None will create a new conversation)")
     context: Optional[ChatContext] = Field(None, description="Optional context")
 
 
@@ -39,6 +40,7 @@ class ChatResponse(BaseModel):
     actions: List[ActionResult] = Field(default_factory=list, description="Actions taken by agent")
     snapshot_id: Optional[str] = Field(None, description="Snapshot ID if changes were made")
     suggestions: Optional[List[Suggestion]] = Field(None, description="Interactive suggestions for user to select")
+    conversation_id: Optional[str] = Field(None, description="Conversation ID for continuing this conversation")
 
     # Smart decision fields
     auto_action: Optional[Dict[str, Any]] = Field(None, description="Auto-executed action based on user preference (probability > 50%)")
@@ -52,3 +54,28 @@ class ChatFeedbackRequest(BaseModel):
     message_id: str
     rating: int = Field(..., ge=1, le=5, description="Rating from 1 to 5")
     comment: Optional[str] = None
+
+
+class CreateConversationRequest(BaseModel):
+    """Request model for creating a conversation"""
+    user_id: str = Field(..., description="User ID")
+    title: Optional[str] = Field(None, description="Conversation title (optional)")
+
+
+class ConversationResponse(BaseModel):
+    """Response model for conversation"""
+    id: str
+    user_id: str
+    title: Optional[str]
+    created_at: str
+    updated_at: str
+    message_count: int
+
+
+class MessageResponse(BaseModel):
+    """Response model for message"""
+    id: str
+    conversation_id: str
+    role: str
+    content: Optional[str]
+    created_at: str

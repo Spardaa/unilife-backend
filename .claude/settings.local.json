@@ -5,7 +5,10 @@
       "Bash(python:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "Bash(sqlite3:*)",
+      "Bash(git reset:*)",
+      "Bash(findstr:*)"
     ]
   }
 }

@@ -22,17 +22,27 @@ unilife-backend/
 │   ├── main.py              # FastAPI 应用入口
 │   ├── config.py            # 配置文件
 │   ├── models/              # 数据模型
-│   │   ├── event.py         # 事件、精力等级、类别枚举
-│   │   └── preference.py    # 用户偏好模型
+│   │   ├── event.py         # 事件、精力等级、类别枚举、增强字段
+│   │   ├── preference.py    # 用户偏好模型
+│   │   ├── user_profile.py  # 用户画像模型
+│   │   ├── database_snapshot.py  # 快照数据模型
+│   │   ├── routine.py       # 习惯/长期日程模型
+│   │   └── conversation.py  # 对话记录模型
 │   ├── agents/              # AI Agents
 │   │   ├── jarvis.py        # Jarvis Agent (LLM + Tools 架构)
 │   │   ├── scheduler.py     # 日程管理
 │   │   ├── energy.py        # 精力管理
-│   │   └── tools.py         # 工具注册 (18个工具)
+│   │   ├── energy_evaluator.py  # 精力消耗评估专家
+│   │   ├── smart_scheduler.py   # 智能日程调度助手
+│   │   ├── context_extractor.py # 用户画像推测专家
+│   │   └── tools.py         # 工具注册 (20个工具)
 │   ├── services/            # 业务服务
 │   │   ├── db.py            # 数据库服务 (SQLAlchemy)
 │   │   ├── llm.py           # LLM 服务 (DeepSeek + 重试机制)
-│   │   └── snapshot.py     # 快照服务
+│   │   ├── snapshot.py      # 快照服务
+│   │   ├── profile_service.py   # 用户画像服务
+│   │   ├── routine_service.py   # 习惯管理服务
+│   │   └── conversation_service.py  # 对话记录服务
 │   ├── api/                 # API 路由
 │   │   ├── chat.py          # 对话式接口
 │   │   ├── events.py        # 事件 CRUD
@@ -48,7 +58,13 @@ unilife-backend/
 ├── client.py                # 终端客户端
 ├── init_db.py              # 数据库初始化脚本
 ├── migrate_db.py           # 数据库迁移脚本
+├── migrate_routine.py      # Routine 功能迁移脚本
+├── migrate_enhanced_features.py  # 增强功能迁移脚本
+├── migrate_conversations.py  # 对话记录迁移脚本
 ├── test_deepseek_connection.py  # 连接测试工具
+├── test_enhanced_features.py  # 增强功能测试
+├── test_routine.py          # Routine 功能测试
+├── test_conversation.py     # 对话记录测试
 ├── requirements.txt         # 依赖包
 └── .env.example             # 环境变量示例
 ```
@@ -91,16 +107,38 @@ python init_db.py
 
 ### 4. 数据库迁移（重要！）
 
-如果您从旧版本升级，需要运行数据库迁移脚本：
+如果您从旧版本升级，需要按顺序运行数据库迁移脚本：
 
+#### 4.1 基础迁移
 ```bash
 python migrate_db.py
 ```
-
-这会：
 - 自动备份数据库（`unilife.db.backup`）
 - 添加 6 个新字段支持 Routine/Habit 管理
-- 更新表结构
+
+#### 4.2 Routine 功能迁移
+```bash
+python migrate_routine.py
+```
+- 创建 routines 表
+- 添加习惯管理相关功能
+
+#### 4.3 增强功能迁移
+```bash
+python migrate_enhanced_features.py
+```
+- 添加精力评估字段（energy_consumption）
+- 添加 AI 描述字段（ai_description）
+- 添加画像点字段（extracted_points）
+- 创建用户画像表（user_profiles）
+- 创建数据库快照表（database_snapshots）
+
+#### 4.4 对话记录迁移
+```bash
+python migrate_conversations.py
+```
+- 创建对话记录表（conversations）
+- 支持对话历史持久化
 
 ### 5. 启动开发服务器
 
@@ -243,6 +281,51 @@ POST /api/v1/chat
 }
 ```
 
+### 精力评估
+
+```json
+POST /api/v1/chat
+{
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "message": "帮我评估一下这个活动会消耗多少精力"
+}
+```
+
+系统会自动分析活动的体力消耗和精神消耗，并提供：
+- 等级（Low/Medium/High）
+- 分数（0-10）
+- 详细描述
+- 影响因素
+
+### 日程分析
+
+```json
+POST /api/v1/chat
+{
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "message": "帮我看看明天的安排合理吗？"
+}
+```
+
+智能调度器会检查：
+- 连续高强度体力/精神活动
+- 单一维度过度集中
+- 缺乏休息或调节
+- 提供优化建议
+
+### 用户画像（自动学习）
+
+系统会自动从您的事件中学习：
+- 关系状态（单身/约会中/已婚）
+- 职业身份
+- 活动偏好
+- 生活习惯
+
+**特点**：
+- 不主动询问，通过观察学习
+- 逐渐提升准确性
+- 支持个性化建议
+
 ## AI Agent 架构
 
 ### Jarvis Agent (核心智能体)
@@ -251,18 +334,20 @@ POST /api/v1/chat
 
 **核心特性：**
 - 使用 DeepSeek API 进行自然语言理解和推理
-- 通过函数调用（Function Calling）访问 18 个工具
+- 通过函数调用（Function Calling）访问 20 个工具
 - 自动进行多步推理和工具链式调用
 - 最多 30 次迭代，支持复杂任务规划
 
-**工具分类（18个工具）：**
+**工具分类（20个工具）：**
 
 1. **事件管理（6个）**
    - create_event, query_events, delete_event
    - update_event, complete_event, check_time_conflicts
 
-2. **精力管理（2个）**
+2. **精力管理（4个）**
    - get_user_energy, get_schedule_overview
+   - evaluate_energy_consumption - 评估事件的精力消耗（体力+精神）
+   - analyze_schedule - 分析日程安排合理性
 
 3. **快照系统（2个）**
    - get_snapshots, revert_snapshot
@@ -289,6 +374,51 @@ POST /api/v1/chat
 - **灵活时间**：支持"每天再定时间"的 Routine
 - **补课机制**：智能建议如何补上未完成的习惯
 
+### 专用 Agent 系统
+
+除了核心的 Jarvis Agent，系统还包含三个专用 Agent：
+
+#### 1. Energy Evaluator Agent - 精力消耗评估专家
+- **功能**：评估事件在体力（Physical）和精神（Mental）两个维度的消耗程度
+- **评估标准**：
+  - Low (0-3分): 轻度消耗
+  - Medium (4-6分): 中等消耗
+  - High (7-10分): 高强度消耗
+- **输出结构**：level（等级）+ score（分数）+ description（描述）+ factors（影响因素）
+- **应用场景**：
+  - 事件创建时自动评估精力消耗
+  - 帮助用户合理安排日程
+  - 为智能调度提供数据支持
+
+#### 2. Smart Scheduler Agent - 智能日程调度助手
+- **功能**：检测不合理的事件组合，提供精力优化建议
+- **检测问题**：
+  - 连续高强度体力消耗（3个以上高体力活动）
+  - 连续高强度精神工作（3个以上高精神活动）
+  - 单一维度过度集中（全天体力活 / 全天脑力工作）
+  - 缺乏休息或调节
+- **优化建议**：提供具体的日程调整建议
+- **两种模式**：
+  - LLM 模式：深度分析，综合考虑用户偏好
+  - 快速模式：基于规则的快速检查
+
+#### 3. Context Extractor Agent - 用户画像推测专家
+- **功能**：通过观察事件学习用户画像，而不是主动询问
+- **提取类型**：
+  - relationship（关系状态）：单身/约会中/已婚/复杂
+  - identity（用户身份）：职业/行业/职位
+  - preference（个人喜好）：活动类型/社交倾向/工作风格
+  - habit（个人习惯）：作息/工作时间/运动模式
+- **工作原则**：
+  - 只提取有明确证据的推测
+  - 不强行推测，信息不足时该类型就不返回
+  - 优先考虑高频行为
+  - 注意隐私边界
+- **应用场景**：
+  - 自动学习用户画像
+  - 支持个性化建议
+  - 逐渐提升服务质量
+
 ## 数据库
 
 ### SQLite (默认 - 开发环境)
@@ -304,22 +434,36 @@ POST /api/v1/chat
 ### 数据表
 
 - **users** - 用户信息及精力配置
-- **events** - 日程事件（包含 6 个 Routine 相关字段）
+- **events** - 日程事件
+  - 基础字段（title, start_time, duration 等）
+  - Routine 相关字段（6个）
+  - 增强功能字段（3个）
+- **routines** - 长期日程/习惯
 - **snapshots** - 快照记录
+- **conversations** - 对话记录
 - **user_memory** - 用户记忆与学习数据
 - **user_preferences** - 用户偏好学习记录
   - scenario_type - 场景类型（如 time_conflict, event_cancellation）
   - decision - 用户决策
   - context - 上下文信息
   - weight - 权重（默认 1.0）
+- **user_profiles** - 用户画像
+- **database_snapshots** - 数据库快照（增量）
 
-**Events 表新增字段（支持 Routine）：**
+**Events 表 Routine 相关字段：**
 - repeat_rule - 重复规则（daily/weekly/custom）
 - is_flexible - 时间是否灵活
 - preferred_time_slots - 偏好时间段
 - makeup_strategy - 补课策略
 - parent_routine_id - 父 routine ID
 - routine_completed_dates - 完成日期列表
+
+**Events 表增强功能字段：**
+- energy_consumption - 精力消耗评估（JSON）
+  - physical: 体力消耗（level, score, description, factors）
+  - mental: 精神消耗（level, score, description, factors）
+- ai_description - AI 生成的活动描述
+- extracted_points - 提取的用户画像点（JSON 数组）
 
 ## 开发计划
 
@@ -343,13 +487,34 @@ POST /api/v1/chat
   - [x] 灵活时间安排
   - [x] 补课机制
   - [x] 完成追踪统计
-- [x] 智能时间解析增强 ⭐ NEW
+- [x] 智能时间解析增强
   - [x] 精确时间解析（明天下午3点、15:30）
   - [x] 相对日期（今天、明天、后天、大后天）
   - [x] 星期几（下周三、本周五）
   - [x] 模糊时间（傍晚、上午晚些时候）
   - [x] 时间范围（本周三到周五）
-- [ ] Routine 智能提醒（主动推送）- 待实现
+- [x] 精力评估系统 ⭐ NEW
+  - [x] 双维度评估（体力 + 精神）
+  - [x] Energy Evaluator Agent
+  - [x] Smart Scheduler Agent
+  - [x] 日程合理性检测
+- [x] 用户画像系统 ⭐ NEW
+  - [x] Context Extractor Agent
+  - [x] 四维度画像（关系、身份、喜好、习惯）
+  - [x] 观察式学习（不主动询问）
+  - [x] 画像持久化
+- [x] 对话记录持久化 ⭐ NEW
+  - [x] 对话历史存储
+  - [x] 上下文传递
+- [x] 增量数据库快照 ⭐ NEW
+  - [x] 快照数据模型
+  - [x] 只存储变更行
+  - [ ] 快照回滚逻辑（待实现）
+
+### Phase 2.5: 增强功能完善 (P1.5) - 🚧 进行中
+- [ ] Routine 智能提醒（主动推送）
+- [ ] 用户画像纠错机制
+- [ ] 快照回滚功能实现
 - [ ] chatgpt-on-wechat 集成
 
 ### Phase 3: 生活控制台 (P2)

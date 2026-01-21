@@ -1,7 +1,7 @@
 """
 Event Model - Database model for schedule events
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -40,6 +40,80 @@ class EventStatus(str, Enum):
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
 
+
+# ==================== New Models for Enhanced Features ====================
+
+class EnergyDimension(BaseModel):
+    """Single dimension of energy consumption"""
+    level: str = Field(..., description="Energy level: low, medium, high")
+    score: int = Field(..., ge=0, le=10, description="Energy score 0-10")
+    description: str = Field(..., description="Natural language description")
+    factors: List[str] = Field(default_factory=list, description="Specific factors contributing to energy consumption")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "level": "high",
+                "score": 8,
+                "description": "需要连续站立3小时，涉及搬运物品",
+                "factors": ["站立", "搬运", "移动"]
+            }
+        }
+
+
+class EnergyConsumption(BaseModel):
+    """Energy consumption evaluation for an event"""
+    physical: EnergyDimension = Field(..., description="Physical energy consumption")
+    mental: EnergyDimension = Field(..., description="Mental energy consumption")
+    evaluated_at: datetime = Field(default_factory=datetime.utcnow, description="Evaluation timestamp")
+    evaluated_by: str = Field(default="energy_evaluator_agent", description="Agent that performed evaluation")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "physical": {
+                    "level": "high",
+                    "score": 8,
+                    "description": "需要上下楼梯搬运重物",
+                    "factors": ["爬楼梯", "搬运重物"]
+                },
+                "mental": {
+                    "level": "low",
+                    "score": 3,
+                    "description": "简单的体力劳动",
+                    "factors": ["机械操作"]
+                },
+                "evaluated_at": "2026-01-21T10:00:00",
+                "evaluated_by": "energy_evaluator_agent"
+            }
+        }
+
+
+class ExtractedPoint(BaseModel):
+    """User profile point extracted from event"""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Point ID")
+    type: str = Field(..., description="Point type: relationship, identity, preference, habit")
+    content: str = Field(..., description="Extracted content")
+    confidence: float = Field(..., ge=0, le=1, description="Confidence 0.0-1.0")
+    evidence: List[str] = Field(default_factory=list, description="Evidence sources")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation timestamp")
+    validated: bool = Field(default=False, description="Whether user has validated this")
+    validation_count: int = Field(default=0, description="Number of validations (increases weight)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "type": "relationship",
+                "content": "用户可能正在约会或有恋人",
+                "confidence": 0.75,
+                "evidence": ["关键词'约会'", "周五晚上时段"],
+                "validated": False,
+                "validation_count": 0
+            }
+        }
+
+
+# ==================== Event Model ====================
 
 class Event(BaseModel):
     """Unified event model for all schedule types"""
@@ -85,6 +159,16 @@ class Event(BaseModel):
     # AI reasoning fields
     ai_confidence: float = Field(default=0.5, ge=0, le=1, description="AI creation confidence")
     ai_reasoning: Optional[str] = Field(None, description="AI decision reasoning")
+
+    # ==================== Enhanced Features Fields ====================
+    # Energy consumption evaluation (体力 + 精神)
+    energy_consumption: Optional[EnergyConsumption] = Field(None, description="Detailed energy consumption evaluation")
+
+    # AI-generated description (separate from user-provided description)
+    ai_description: Optional[str] = Field(None, description="AI-generated description explaining the event context and purpose")
+
+    # Extracted user profile points
+    extracted_points: List[ExtractedPoint] = Field(default_factory=list, description="User profile insights extracted from this event")
 
     class Config:
         json_schema_extra = {
