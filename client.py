@@ -124,7 +124,7 @@ def send_chat_message(message: str) -> Optional[dict]:
                 "user_id": USER_ID,
                 "context": None  # Optional field, send null instead of empty dict
             },
-            timeout=30
+            timeout=120
         )
 
         if response.status_code == 200:

@@ -1,16 +1,13 @@
 """
-Chat API - Conversational interface for Jarvis
+Chat API - Conversational interface for Jarvis (重构版)
+使用新的 Jarvis Agent (LLM + Tools 架构)
 """
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from app.schemas.chat import ChatRequest, ChatResponse, ActionResult
-from app.agents.router import router_agent
-from app.agents.scheduler import schedule_agent
-from app.agents.energy import energy_agent
+from app.agents.jarvis import jarvis_agent
 from app.services.snapshot import snapshot_manager
-from app.services.llm import llm_service
-from app.agents.intent import Intent
 
 router = APIRouter()
 
@@ -23,153 +20,76 @@ async def chat(request: ChatRequest):
     """
     Main conversational endpoint for Jarvis
 
-    Handles natural language input and returns agent responses
-
-    This is the primary entry point for all interactions with Jarvis.
+    新架构说明：
+    - 使用 Jarvis Agent（LLM + Tools）
+    - 自动推理和工具调用
+    - 支持多步对话和上下文理解
     """
-    # Update conversation history
-    if request.user_id not in conversation_history:
-        conversation_history[request.user_id] = []
-
-    conversation_history[request.user_id].append({
-        "role": "user",
-        "content": request.message
-    })
+    # Get conversation history for this user
+    user_history = conversation_history.get(request.user_id, [])
 
     try:
-        # Step 1: Classify intent using RouterAgent
-        intent_result = await router_agent.classify_intent(
+        # Call Jarvis Agent
+        result = await jarvis_agent.chat(
             user_message=request.message,
             user_id=request.user_id,
-            conversation_history=conversation_history[request.user_id]
+            conversation_history=user_history
         )
 
-        intent = intent_result.intent
-        print(f"[RouterAgent] Intent: {intent.value}, Confidence: {intent_result.confidence}")
+        reply = result["reply"]
+        actions = result.get("actions", [])
+        tool_calls = result.get("tool_calls", [])
+        updated_history = result.get("conversation_history", user_history)
 
-        # Step 2: Handle based on intent
-        actions: List[ActionResult] = []
-        snapshot_id: Optional[str] = None
-        reply = ""
-
-        # Handle conversation intents (greeting, thanks, goodbye, chitchat, unknown)
-        if intent in [Intent.GREETING, Intent.THANKS, Intent.GOODBYE, Intent.CHITCHAT, Intent.UNKNOWN]:
-            reply = await _handle_conversation(request.message, intent)
-
-        # Handle event operations
-        elif intent == Intent.CREATE_EVENT:
-            result = await schedule_agent.handle_create_event(
-                user_message=request.message,
-                user_id=request.user_id,
-                context=request.context
-            )
-            reply = result["reply"]
-            actions = result.get("actions", [])
-
-            # Create snapshot if changes were made
-            if result["success"] and actions:
+        # Create snapshot if there were modifying actions
+        snapshot_id = None
+        if actions and any(a["type"] in ["create_event", "update_event", "delete_event"] for a in actions):
+            try:
                 from app.models.snapshot import EventChange
+
+                # Build changes list from actions
+                changes = []
+                for action in actions:
+                    change_dict = {
+                        "event_id": action["event_id"],
+                        "action": action["type"].replace("_event", ""),  # create_event -> create
+                        "event": action.get("event")
+                    }
+                    if "before" in action:
+                        change_dict["before"] = action["before"]
+                    if "after" in action:
+                        change_dict["after"] = action["after"]
+
+                    changes.append(EventChange(**change_dict))
+
+                # Create snapshot
                 snapshot = await snapshot_manager.create_snapshot(
                     user_id=request.user_id,
                     trigger_message=request.message,
-                    changes=[EventChange(
-                        event_id=actions[0]["event_id"],
-                        action="create",
-                        after=actions[0]["event"]
-                    )]
+                    changes=changes
                 )
                 snapshot_id = snapshot.id
 
-        elif intent == Intent.QUERY_EVENT:
-            result = await schedule_agent.handle_query_event(
-                user_message=request.message,
-                user_id=request.user_id,
-                context=request.context
+            except Exception as e:
+                # Snapshot creation failure shouldn't break the chat
+                print(f"[Chat API] Warning: Failed to create snapshot: {e}")
+
+        # Update conversation history
+        conversation_history[request.user_id] = updated_history
+
+        # Convert actions to schema format
+        action_responses = [
+            ActionResult(
+                type=action["type"],
+                event_id=action.get("event_id"),
+                event=action.get("event")
             )
-            reply = result["reply"]
-
-        elif intent == Intent.UPDATE_EVENT:
-            result = await schedule_agent.handle_update_event(
-                user_message=request.message,
-                user_id=request.user_id,
-                context=request.context
-            )
-            reply = result["reply"]
-            actions = result.get("actions", [])
-
-            # Create snapshot if changes were made
-            if result["success"] and actions:
-                from app.models.snapshot import EventChange
-                snapshot = await snapshot_manager.create_snapshot(
-                    user_id=request.user_id,
-                    trigger_message=request.message,
-                    changes=[EventChange(
-                        event_id=actions[0]["event_id"],
-                        action="update",
-                        before=result.get("before"),
-                        after=result.get("after")
-                    )]
-                )
-                snapshot_id = snapshot.id
-
-        elif intent == Intent.DELETE_EVENT:
-            result = await schedule_agent.handle_delete_event(
-                user_message=request.message,
-                user_id=request.user_id,
-                context=request.context
-            )
-            reply = result["reply"]
-            actions = result.get("actions", [])
-
-            # Create snapshot if changes were made
-            if result["success"] and actions:
-                from app.models.snapshot import EventChange
-                snapshot = await snapshot_manager.create_snapshot(
-                    user_id=request.user_id,
-                    trigger_message=request.message,
-                    changes=[EventChange(
-                        event_id=actions[0]["event_id"],
-                        action="delete",
-                        before=result.get("before")
-                    )]
-                )
-                snapshot_id = snapshot.id
-
-        # Handle snapshot operations
-        elif intent == Intent.UNDO_CHANGE:
-            result = await snapshot_manager.undo_last_change(request.user_id)
-            reply = result["message"]
-
-        elif intent == Intent.RESTORE_SNAPSHOT:
-            # For now, treat as undo (specific snapshot ID would need to be parsed)
-            result = await snapshot_manager.undo_last_change(request.user_id)
-            reply = result["message"]
-
-        # Handle energy operations
-        elif intent == Intent.CHECK_ENERGY:
-            result = await energy_agent.check_energy(request.user_id)
-            reply = result["message"]
-
-        elif intent == Intent.SUGGEST_SCHEDULE:
-            result = await energy_agent.suggest_schedule(request.user_id)
-            reply = result["message"]
-
-        # Handle stats operations
-        elif intent == Intent.GET_STATS:
-            reply = "统计功能正在开发中，敬请期待！"
-
-        else:
-            reply = "我没有完全理解您的意图，能再说一遍吗？"
-
-        # Add assistant response to conversation history
-        conversation_history[request.user_id].append({
-            "role": "assistant",
-            "content": reply
-        })
+            for action in actions
+        ]
 
         return ChatResponse(
             reply=reply,
-            actions=actions,
+            actions=action_responses,
             snapshot_id=snapshot_id
         )
 
@@ -220,69 +140,3 @@ async def clear_chat_history(user_id: str):
         "status": "success",
         "message": "对话历史已清除。"
     }
-
-
-# ============ Helper Functions ============
-
-async def _handle_conversation(message: str, intent: Intent) -> str:
-    """
-    Handle conversational intents (greeting, thanks, goodbye, chitchat)
-
-    Args:
-        message: User's message
-        intent: Classified intent
-
-    Returns:
-        Natural language response
-    """
-    from app.agents.intent import Intent
-    from app.services.prompt import prompt_service
-    import random
-
-    if intent == Intent.GREETING:
-        greetings = [
-            "你好！我是 Jarvis，你的 AI 生活管家。有什么我可以帮你的吗？",
-            "Hi！我是 Jarvis。今天有什么安排需要我帮忙的吗？",
-            "你好呀！我是 Jarvis，随时为你效劳。"
-        ]
-        return random.choice(greetings)
-
-    elif intent == Intent.THANKS:
-        thanks = [
-            "不客气！这是我的荣幸。",
-            "很高兴能帮到你！",
-            "随时为你服务！"
-        ]
-        return random.choice(thanks)
-
-    elif intent == Intent.GOODBYE:
-        goodbyes = [
-            "再见！祝你今天愉快！",
-            "拜拜，有需要随时找我！",
-            "再见！期待下次交流。"
-        ]
-        return random.choice(goodbyes)
-
-    elif intent == Intent.CHITCHAT:
-        # Load Jarvis persona from external file
-        system_prompt = prompt_service.load_prompt("jarvis_persona")
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": message}
-        ]
-
-        response = await llm_service.chat_completion(messages, temperature=0.7)
-        return response["content"]
-
-    else:  # UNKNOWN
-        return (
-            "抱歉，我没有完全理解您的意思。\n\n"
-            "您可以试着这样对我说：\n"
-            "- 帮我安排明天下午3点开会\n"
-            "- 我明天有什么安排\n"
-            "- 取消今天的会议\n"
-            "- 我现在状态怎么样\n"
-            "- 帮我安排一下今天\n"
-            "- 撤销刚才的操作"
-        )
