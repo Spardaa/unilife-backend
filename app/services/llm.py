@@ -4,6 +4,7 @@ LLM Service - Integration with DeepSeek API (OpenAI Compatible)
 """
 from typing import List, Dict, Any, Optional
 import httpx
+import asyncio
 from app.config import settings
 
 
@@ -14,11 +15,83 @@ class LLMService:
         self.api_key = settings.deepseek_api_key
         self.base_url = settings.deepseek_base_url
         self.model = settings.deepseek_model
+        self.max_retries = 3
+        self.retry_delay = 1.0
+
+        # 创建支持重试的 HTTP 客户端
+        limits = httpx.Limits(
+            max_keepalive_connections=5,
+            max_connections=10,
+            keepalive_expiry=30.0
+        )
+
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {self.api_key}"},
-            timeout=120.0
+            timeout=httpx.Timeout(600.0, connect=30.0),  # 10分钟总超时，30秒连接超时
+            limits=limits,
+            verify=True  # SSL 证书验证
         )
+
+    async def _make_request_with_retry(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        发送带重试机制的请求
+
+        Args:
+            endpoint: API 端点
+            payload: 请求负载
+
+        Returns:
+            响应数据
+        """
+        last_error = None
+
+        for attempt in range(self.max_retries):
+            try:
+                print(f"[LLM] Attempt {attempt + 1}/{self.max_retries}: {endpoint}")
+
+                response = await self.client.post(endpoint, json=payload)
+                response.raise_for_status()
+
+                data = response.json()
+                print(f"[LLM] Success: {endpoint}")
+                return data
+
+            except httpx.ConnectError as e:
+                last_error = e
+                print(f"[LLM] Connection error (attempt {attempt + 1}): {e}")
+
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)  # 指数退避
+                    print(f"[LLM] Retrying in {delay} seconds...")
+                    await asyncio.sleep(delay)
+                else:
+                    print(f"[LLM] All retry attempts failed for {endpoint}")
+
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                print(f"[LLM] HTTP error {e.response.status_code}: {e.response.text}")
+
+                # 4xx 错误不重试
+                if 400 <= e.response.status_code < 500:
+                    break
+
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)
+                    print(f"[LLM] Retrying in {delay} seconds...")
+                    await asyncio.sleep(delay)
+
+            except Exception as e:
+                last_error = e
+                print(f"[LLM] Unexpected error (attempt {attempt + 1}): {e}")
+                break
+
+        # 所有重试都失败
+        raise Exception(f"Failed to connect to LLM API after {self.max_retries} attempts. Last error: {last_error}")
 
     async def chat_completion(
         self,
@@ -46,10 +119,7 @@ class LLMService:
         if max_tokens:
             payload["max_tokens"] = max_tokens
 
-        response = await self.client.post("/chat/completions", json=payload)
-        response.raise_for_status()
-
-        data = response.json()
+        data = await self._make_request_with_retry("/chat/completions", payload)
         return {
             "content": data["choices"][0]["message"]["content"],
             "usage": data.get("usage", {}),
@@ -83,10 +153,7 @@ class LLMService:
             "temperature": temperature,
         }
 
-        response = await self.client.post("/chat/completions", json=payload)
-        response.raise_for_status()
-
-        data = response.json()
+        data = await self._make_request_with_retry("/chat/completions", payload)
         message = data["choices"][0]["message"]
 
         return {

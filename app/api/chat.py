@@ -40,6 +40,7 @@ async def chat(request: ChatRequest):
         actions = result.get("actions", [])
         tool_calls = result.get("tool_calls", [])
         updated_history = result.get("conversation_history", user_history)
+        suggestions = result.get("suggestions")
 
         # Create snapshot if there were modifying actions
         snapshot_id = None
@@ -87,10 +88,24 @@ async def chat(request: ChatRequest):
             for action in actions
         ]
 
+        # Convert suggestions to schema format
+        suggestion_responses = None
+        if suggestions:
+            from app.schemas.chat import Suggestion
+            suggestion_responses = [
+                Suggestion(
+                    label=s.get("label"),
+                    value=s.get("value"),
+                    description=s.get("description")
+                )
+                for s in suggestions
+            ]
+
         return ChatResponse(
             reply=reply,
             actions=action_responses,
-            snapshot_id=snapshot_id
+            snapshot_id=snapshot_id,
+            suggestions=suggestion_responses
         )
 
     except Exception as e:

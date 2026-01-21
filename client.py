@@ -5,6 +5,7 @@ UniLife Terminal Client - 简易终端前端
 import requests
 import json
 import sys
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -16,7 +17,7 @@ if sys.platform == "win32":
 
 # API 配置
 API_BASE_URL = "http://localhost:8000/api/v1"
-USER_ID = "test_user_001"
+USER_ID_FILE = ".unilife_user_id.txt"  # 保存用户 ID 的文件
 
 
 class Colors:
@@ -114,17 +115,76 @@ def print_actions(actions: list):
             print(f"• {action_type}")
 
 
-def send_chat_message(message: str) -> Optional[dict]:
+def load_last_user_id() -> Optional[str]:
+    """加载上次使用的用户 ID"""
+    try:
+        if os.path.exists(USER_ID_FILE):
+            with open(USER_ID_FILE, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    return None
+
+
+def save_user_id(user_id: str):
+    """保存用户 ID"""
+    try:
+        with open(USER_ID_FILE, 'w', encoding='utf-8') as f:
+            f.write(user_id)
+    except Exception:
+        pass
+
+
+def login() -> str:
+    """登录界面 - 获取用户 ID"""
+    print(f"\n{Colors.CYAN}{'='*60}{Colors.END}")
+    print(f"{Colors.BOLD}{Colors.CYAN}                    登录{Colors.END}")
+    print(f"{Colors.CYAN}{'='*60}{Colors.END}\n")
+
+    # 尝试加载上次使用的用户 ID
+    last_user_id = load_last_user_id()
+
+    if last_user_id:
+        print(f"{Colors.YELLOW}检测到上次登录：{Colors.END}{Colors.BOLD}{last_user_id}{Colors.END}")
+        choice = input(f"是否使用此账号？[{Colors.GREEN}Y{Colors.END}/n] ").strip().lower()
+
+        if choice in ['', 'y', 'yes']:
+            print(f"{Colors.GREEN}✓ 欢迎回来，{last_user_id}！{Colors.END}\n")
+            return last_user_id
+
+    # 输入用户 ID
+    while True:
+        user_id = input(f"{Colors.CYAN}请输入用户 ID：{Colors.END}").strip()
+
+        if not user_id:
+            print(f"{Colors.RED}✗ 用户 ID 不能为空{Colors.END}")
+            continue
+
+        # 简单验证
+        if len(user_id) < 3:
+            print(f"{Colors.YELLOW}⚠ 用户 ID 建议至少 3 个字符{Colors.END}")
+            confirm = input("仍然使用此 ID？[y/N] ").strip().lower()
+            if confirm not in ['y', 'yes']:
+                continue
+
+        # 保存用户 ID
+        save_user_id(user_id)
+
+        print(f"{Colors.GREEN}✓ 登录成功！欢迎，{user_id}{Colors.END}\n")
+        return user_id
+
+
+def send_chat_message(message: str, user_id: str) -> Optional[dict]:
     """发送聊天消息到后端"""
     try:
         response = requests.post(
             f"{API_BASE_URL}/chat",
             json={
                 "message": message,
-                "user_id": USER_ID,
+                "user_id": user_id,
                 "context": None  # Optional field, send null instead of empty dict
             },
-            timeout=120
+            timeout=600  # 10分钟超时，支持复杂任务
         )
 
         if response.status_code == 200:
@@ -144,12 +204,12 @@ def send_chat_message(message: str) -> Optional[dict]:
         return None
 
 
-def get_chat_history() -> Optional[dict]:
+def get_chat_history(user_id: str) -> Optional[dict]:
     """获取对话历史"""
     try:
         response = requests.get(
             f"{API_BASE_URL}/chat/history",
-            params={"user_id": USER_ID, "limit": 50}
+            params={"user_id": user_id, "limit": 50}
         )
 
         if response.status_code == 200:
@@ -163,12 +223,12 @@ def get_chat_history() -> Optional[dict]:
         return None
 
 
-def clear_chat_history() -> bool:
+def clear_chat_history(user_id: str) -> bool:
     """清除对话历史"""
     try:
         response = requests.delete(
             f"{API_BASE_URL}/chat/history",
-            params={"user_id": USER_ID}
+            params={"user_id": user_id}
         )
 
         if response.status_code == 200:
@@ -182,12 +242,12 @@ def clear_chat_history() -> bool:
         return False
 
 
-def get_all_events() -> Optional[dict]:
+def get_all_events(user_id: str) -> Optional[dict]:
     """获取所有事件"""
     try:
         response = requests.get(
             f"{API_BASE_URL}/events",
-            params={"user_id": USER_ID}
+            params={"user_id": user_id}
         )
 
         if response.status_code == 200:
@@ -201,12 +261,12 @@ def get_all_events() -> Optional[dict]:
         return None
 
 
-def get_snapshots() -> Optional[dict]:
+def get_snapshots(user_id: str) -> Optional[dict]:
     """获取快照历史"""
     try:
         response = requests.get(
             f"{API_BASE_URL}/snapshots",
-            params={"user_id": USER_ID}
+            params={"user_id": user_id}
         )
 
         if response.status_code == 200:
@@ -274,7 +334,7 @@ def format_snapshots_display(snapshots_data: dict):
 
     print(f"\n{Colors.CYAN}━━━ 快照历史 ({len(snapshots)}) ━━━{Colors.END}")
 
-    for i, snapshot in enumerate(snippets, 1):
+    for i, snapshot in enumerate(snapshots, 1):
         snapshot_id = snapshot.get("id", "")[:8]
         trigger = snapshot.get("trigger_message", "")
         created_at = snapshot.get("created_at", "")
@@ -289,9 +349,89 @@ def format_snapshots_display(snapshots_data: dict):
     print()
 
 
+def print_suggestions(suggestions: list):
+    """打印建议选项"""
+    if not suggestions:
+        return
+
+    print(f"\n{Colors.CYAN}━━━ 请选择 ━━━{Colors.END}")
+    for i, suggestion in enumerate(suggestions, 1):
+        label = suggestion.get("label", "")
+        description = suggestion.get("description", "")
+        probability = suggestion.get("probability")
+
+        # 构建显示文本
+        base_text = f"  {Colors.GREEN}{i}.{Colors.END} {Colors.BOLD}{label}{Colors.END}"
+
+        # 添加概率显示
+        if probability is not None:
+            # 根据概率选择不同的颜色
+            if probability >= 70:
+                prob_color = Colors.GREEN
+            elif probability >= 40:
+                prob_color = Colors.YELLOW
+            else:
+                prob_color = Colors.RED
+            base_text += f" [{prob_color}{probability}%{Colors.END}]"
+
+        # 添加描述
+        if description:
+            print(f"{base_text} - {description}")
+        else:
+            print(base_text)
+    print()
+
+
+def handle_suggestions(result: dict):
+    """处理响应中的 suggestions"""
+    suggestions = result.get("suggestions")
+    if suggestions:
+        print_suggestions(suggestions)
+
+
+def print_auto_action(result: dict):
+    """打印自动执行的操作和备选方案"""
+    auto_action = result.get("auto_action")
+    alternative_options = result.get("alternative_options")
+    confidence = result.get("confidence")
+
+    if auto_action:
+        print(f"\n{Colors.CYAN}━━━ 智能决策 ━━━{Colors.END}")
+        print(f"{Colors.GREEN}✓ 已自动执行{Colors.END}")
+        if confidence:
+            print(f"  置信度：{confidence}%（基于您的历史习惯）")
+
+        # 显示自动执行的 action
+        action_type = auto_action.get("type", "unknown")
+        description = auto_action.get("description", "")
+        if description:
+            print(f"  操作：{description}")
+
+        print()
+
+        # 如果有备选方案，显示
+        if alternative_options:
+            print(f"{Colors.YELLOW}如果不满意，可以选择其他方案：{Colors.END}")
+            for i, option in enumerate(alternative_options, 1):
+                label = option.get("label", "")
+                value = option.get("value", "")
+                print(f"  {Colors.CYAN}{i}.{Colors.END} {label}")
+                if value and value != label:
+                    print(f"      → {value}")
+            print(f"  {Colors.CYAN}0.{Colors.END} 保持当前操作\n")
+
+
 def main():
     """主函数"""
     print_banner()
+
+    # 登录
+    user_id = login()
+
+    # 显示当前用户信息
+    print(f"{Colors.CYAN}━━━ 当前用户 ━━━{Colors.END}")
+    print(f"  用户 ID: {Colors.BOLD}{user_id}{Colors.END}")
+    print()
 
     # 检查服务器连接
     print_message("system", "正在连接服务器...")
@@ -301,11 +441,23 @@ def main():
 
     print_message("success", "已连接到服务器")
 
+    # 选项模式状态
+    option_mode = False
+    current_suggestions = None
+    alternative_mode = False
+    current_alternatives = None
+    original_result = None
+
     # 主循环
     while True:
         try:
             # 获取用户输入
-            user_input = input(f"\n{Colors.BOLD}> {Colors.END}").strip()
+            if option_mode:
+                user_input = input(f"\n{Colors.YELLOW}请选择 [1-{len(current_suggestions)}] 或输入自定义内容:{Colors.END} ").strip()
+            elif alternative_mode:
+                user_input = input(f"\n{Colors.YELLOW}选择备选方案 [0-{len(current_alternatives)}] 或按回车继续:{Colors.END} ").strip()
+            else:
+                user_input = input(f"\n{Colors.BOLD}> {Colors.END}").strip()
 
             if not user_input:
                 continue
@@ -320,7 +472,7 @@ def main():
                 continue
 
             elif user_input.lower() == "history":
-                history_data = get_chat_history()
+                history_data = get_chat_history(user_id)
                 if history_data:
                     history = history_data.get("history", [])
                     print(f"\n{Colors.CYAN}━━━ 对话历史 ({len(history)} 条) ━━━{Colors.END}")
@@ -334,33 +486,102 @@ def main():
                 continue
 
             elif user_input.lower() == "clear":
-                if clear_chat_history():
+                if clear_chat_history(user_id):
                     print_message("success", "对话历史已清除")
                 continue
 
             elif user_input.lower() == "events":
-                events_data = get_all_events()
+                events_data = get_all_events(user_id)
                 if events_data:
                     format_events_display(events_data)
                 continue
 
             elif user_input.lower() == "snapshots":
-                snapshots_data = get_snapshots()
+                snapshots_data = get_snapshots(user_id)
                 if snapshots_data:
                     format_snapshots_display(snapshots_data)
                 continue
 
             elif user_input.lower() == "energy":
                 # 使用聊天接口查询能量
-                result = send_chat_message("我现在状态怎么样")
+                result = send_chat_message("我现在状态怎么样", user_id)
                 if result:
                     print_message("assistant", result.get("reply", ""))
+                    # 处理选项
+                    handle_suggestions(result)
                 continue
 
-            # 发送聊天消息
-            print_message("user", user_input)
+            # 选项模式处理
+            if option_mode and current_suggestions:
+                # 检查是否输入的是数字
+                try:
+                    choice = int(user_input)
+                    if 1 <= choice <= len(current_suggestions):
+                        # 用户选择了选项
+                        selected = current_suggestions[choice - 1]
+                        selected_value = selected.get("value")
 
-            result = send_chat_message(user_input)
+                        if selected_value is None:
+                            # value 为 None，需要用户手动输入
+                            label = selected.get("label", "")
+                            print_message("system", f"请输入{label}：")
+                            # 下一轮循环会获取用户输入
+                            option_mode = False
+                            current_suggestions = None
+                            continue
+                        else:
+                            # 使用预定义的 value
+                            user_input = selected_value
+                            option_mode = False
+                            current_suggestions = None
+                            print_message("user", user_input)
+                    else:
+                        print_message("error", f"请输入 1-{len(current_suggestions)} 之间的数字")
+                        continue
+                except ValueError:
+                    # 不是数字，当作自定义输入
+                    option_mode = False
+                    current_suggestions = None
+                    print_message("user", user_input)
+
+            # 备选方案模式处理
+            elif alternative_mode and current_alternatives:
+                # 如果用户直接按回车，保持当前操作
+                if user_input == "" or user_input == "0":
+                    print_message("success", "已保持当前操作")
+                    alternative_mode = False
+                    current_alternatives = None
+                    original_result = None
+                    continue
+
+                try:
+                    choice = int(user_input)
+                    if 1 <= choice <= len(current_alternatives):
+                        # 用户选择了备选方案
+                        selected = current_alternatives[choice - 1]
+                        selected_value = selected.get("value")
+
+                        if selected_value:
+                            # 执行备选方案
+                            alternative_mode = False
+                            current_alternatives = None
+                            print_message("user", selected_value)
+                            user_input = selected_value
+                        else:
+                            print_message("error", "无效的备选方案")
+                            continue
+                    else:
+                        print_message("error", f"请输入 0-{len(current_alternatives)} 之间的数字")
+                        continue
+                except ValueError:
+                    # 不是数字，当作新的输入
+                    alternative_mode = False
+                    current_alternatives = None
+                    original_result = None
+                    print_message("user", user_input)
+
+            # 发送聊天消息
+            result = send_chat_message(user_input, user_id)
 
             if result:
                 # 打印回复
@@ -377,8 +598,32 @@ def main():
                 if snapshot_id:
                     print_message("system", f"快照已创建: {snapshot_id[:8]}...")
 
+                # 处理智能决策（自动执行 + 备选方案）
+                auto_action = result.get("auto_action")
+                alternative_options = result.get("alternative_options")
+
+                if auto_action:
+                    print_auto_action(result)
+
+                    # 如果有备选方案，进入备选模式
+                    if alternative_options:
+                        alternative_mode = True
+                        current_alternatives = alternative_options
+                        original_result = result
+
+                # 处理选项
+                suggestions = result.get("suggestions")
+                if suggestions:
+                    option_mode = True
+                    current_suggestions = suggestions
+                    print_suggestions(suggestions)
+
         except KeyboardInterrupt:
             print(f"\n\n{Colors.YELLOW}使用 'quit' 或 'exit' 退出{Colors.END}")
+            option_mode = False
+            current_suggestions = None
+            alternative_mode = False
+            current_alternatives = None
         except EOFError:
             print(f"\n\n{Colors.YELLOW}再见！{Colors.END}")
             break

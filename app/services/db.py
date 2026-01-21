@@ -2,10 +2,11 @@
 Database Service - SQLite with SQLAlchemy
 """
 from typing import List, Dict, Any, Optional
-from datetime import datetime
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, JSON, Numeric
+from datetime import datetime, timedelta
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, JSON, Numeric, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
+import uuid
 
 from app.config import settings
 from app.models.user import UserPreferences, EnergyProfile
@@ -136,6 +137,14 @@ class EventModel(Base):
     ai_confidence = Column(Numeric(3, 2), default=0.5)
     ai_reasoning = Column(String, nullable=True)
 
+    # Routine/Habit specific fields (for long-term recurring events)
+    repeat_rule = Column(JSON, nullable=True)  # {"frequency": "weekly", "days": [1,2,3,4,5], "end_date": "2026-06-30"}
+    is_flexible = Column(Boolean, default=False)  # Whether time is flexible (decide each day)
+    preferred_time_slots = Column(JSON, nullable=True)  # Preferred time slots: [{"start": "18:00", "end": "20:00", "priority": 1}]
+    makeup_strategy = Column(String, nullable=True)  # Strategy when missed: "ask_user", "auto_next_day", "auto_same_day_next_week"
+    parent_routine_id = Column(String, nullable=True)  # For routine instances: which routine they belong to
+    routine_completed_dates = Column(JSON, nullable=True)  # Track which dates the routine was completed: ["2026-01-20", "2026-01-21"]
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         return {
@@ -161,6 +170,13 @@ class EventModel(Base):
             "created_by": self.created_by,
             "ai_confidence": float(self.ai_confidence) if self.ai_confidence else 0.5,
             "ai_reasoning": self.ai_reasoning,
+            # Routine fields
+            "repeat_rule": self.repeat_rule,
+            "is_flexible": self.is_flexible,
+            "preferred_time_slots": self.preferred_time_slots,
+            "makeup_strategy": self.makeup_strategy,
+            "parent_routine_id": self.parent_routine_id,
+            "routine_completed_dates": self.routine_completed_dates or [],
         }
 
 
@@ -231,6 +247,38 @@ class UserMemoryModel(Base):
             "behavior_stats": self.behavior_stats or {},
             "conversation_summary": self.conversation_summary,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class UserPreferenceModel(Base):
+    """User preference learning table model"""
+    __tablename__ = "user_preferences"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, index=True, nullable=False)
+
+    # Scenario information
+    scenario_type = Column(String, nullable=False)  # 场景类型：time_conflict, event_cancellation, etc.
+    context = Column(JSON)  # 上下文信息（事件类型、时间段等）
+
+    # User decision
+    decision = Column(String, nullable=False)  # 用户做出的选择
+    decision_type = Column(String)  # 决策类型：merge, cancel, reschedule, etc.
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    weight = Column(Float, default=1.0)  # 权重（可以随时间衰减）
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "scenario_type": self.scenario_type,
+            "context": self.context,
+            "decision": self.decision,
+            "decision_type": self.decision_type,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "weight": self.weight
         }
 
 
@@ -555,6 +603,339 @@ class DatabaseService:
             session.commit()
             session.refresh(memory)
             return memory.to_dict()
+
+    # ============ User Preference Learning ============
+
+    async def record_user_preference(
+        self,
+        user_id: str,
+        scenario_type: str,
+        decision: str,
+        decision_type: str,
+        context: Optional[Dict[str, Any]] = None,
+        weight: float = 1.0
+    ) -> Dict[str, Any]:
+        """Record user decision for preference learning"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            preference = UserPreferenceModel(
+                user_id=user_id,
+                scenario_type=scenario_type,
+                context=context or {},
+                decision=decision,
+                decision_type=decision_type,
+                weight=weight
+            )
+            session.add(preference)
+            session.commit()
+            session.refresh(preference)
+            return preference.to_dict()
+
+    async def get_user_preferences(
+        self,
+        user_id: str,
+        scenario_type: Optional[str] = None,
+        days_back: int = 90
+    ) -> List[Dict[str, Any]]:
+        """Get user preference history"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            query = session.query(UserPreferenceModel).filter(
+                UserPreferenceModel.user_id == user_id
+            )
+
+            if scenario_type:
+                query = query.filter(UserPreferenceModel.scenario_type == scenario_type)
+
+            # Filter by date
+            cutoff_date = datetime.utcnow() - timedelta(days=days_back)
+            query = query.filter(UserPreferenceModel.created_at >= cutoff_date)
+
+            preferences = query.order_by(UserPreferenceModel.created_at.desc()).all()
+            return [p.to_dict() for p in preferences]
+
+    async def analyze_user_preferences(
+        self,
+        user_id: str,
+        scenario_type: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze user preferences for a specific scenario
+
+        Returns:
+            {
+                "predictions": [
+                    {"option": "merge", "probability": 75, "confidence": "high"},
+                    ...
+                ],
+                "recommended_action": "merge",  # if probability > 50%
+                "confidence": 75,
+                "sample_size": 12
+            }
+        """
+        preferences = await self.get_user_preferences(user_id, scenario_type)
+
+        if not preferences:
+            return {
+                "predictions": [],
+                "recommended_action": None,
+                "confidence": 0,
+                "sample_size": 0,
+                "reason": "no_history"
+            }
+
+        # Calculate probabilities
+        decision_counts = {}
+        total_weight = 0
+
+        for pref in preferences:
+            decision = pref["decision"]
+            weight = pref.get("weight", 1.0)
+            decision_counts[decision] = decision_counts.get(decision, 0) + weight
+            total_weight += weight
+
+        # Calculate predictions
+        predictions = []
+        for decision, count in decision_counts.items():
+            probability = (count / total_weight * 100) if total_weight > 0 else 0
+
+            if probability >= 70:
+                confidence = "high"
+            elif probability >= 40:
+                confidence = "medium"
+            else:
+                confidence = "low"
+
+            predictions.append({
+                "option": decision,
+                "probability": round(probability, 1),
+                "confidence": confidence
+            })
+
+        # Sort by probability
+        predictions.sort(key=lambda x: x["probability"], reverse=True)
+
+        # Recommended action (probability > 50%)
+        recommended = None
+        max_confidence = 0
+        if predictions:
+            top = predictions[0]
+            if top["probability"] > 50:
+                recommended = top["option"]
+                max_confidence = top["probability"]
+
+        return {
+            "predictions": predictions,
+            "recommended_action": recommended,
+            "confidence": max_confidence,
+            "sample_size": len(preferences)
+        }
+
+    # ============ Routine/Habit Management ============
+
+    async def create_routine(
+        self,
+        user_id: str,
+        title: str,
+        description: Optional[str],
+        repeat_rule: Dict[str, Any],
+        is_flexible: bool = False,
+        preferred_time_slots: Optional[List[Dict[str, Any]]] = None,
+        makeup_strategy: str = "ask_user",
+        category: str = "LIFE",
+        duration: Optional[int] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Create a new routine/habit"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            routine = EventModel(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                title=title,
+                description=description,
+                event_type="HABIT",
+                category=category,
+                repeat_rule=repeat_rule,
+                is_flexible=is_flexible,
+                preferred_time_slots=preferred_time_slots or [],
+                makeup_strategy=makeup_strategy,
+                duration=duration,
+                routine_completed_dates=[],
+                status="PENDING",
+                **kwargs
+            )
+            session.add(routine)
+            session.commit()
+            session.refresh(routine)
+            return routine.to_dict()
+
+    async def get_routines(self, user_id: str, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Get all routines for a user"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            query = session.query(EventModel).filter(
+                EventModel.user_id == user_id,
+                EventModel.event_type == "HABIT",
+                EventModel.parent_routine_id.is_(None)  # Only parent routines, not instances
+            )
+
+            if active_only:
+                # Filter out routines with end_date in the past
+                # (We'll need to parse repeat_rule to check end_date)
+                pass
+
+            routines = query.order_by(EventModel.created_at.desc()).all()
+            return [r.to_dict() for r in routines]
+
+    async def get_active_routines_for_date(
+        self,
+        user_id: str,
+        target_date: datetime
+    ) -> List[Dict[str, Any]]:
+        """
+        Get routines that should be active on a specific date
+
+        Args:
+            user_id: User ID
+            target_date: Date to check
+
+        Returns:
+            List of routines that should be done on this date
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            routines = session.query(EventModel).filter(
+                EventModel.user_id == user_id,
+                EventModel.event_type == "HABIT",
+                EventModel.parent_routine_id.is_(None)
+            ).all()
+
+            active_routines = []
+            target_weekday = target_date.weekday()  # 0=Monday, 6=Sunday
+            target_date_str = target_date.strftime("%Y-%m-%d")
+
+            for routine in routines:
+                routine_dict = routine.to_dict()
+                repeat_rule = routine_dict.get("repeat_rule", {})
+                completed_dates = routine_dict.get("routine_completed_dates", [])
+
+                # Skip if already completed on this date
+                if target_date_str in completed_dates:
+                    continue
+
+                # Check if routine applies to this date
+                frequency = repeat_rule.get("frequency")
+
+                if frequency == "daily":
+                    active_routines.append(routine_dict)
+
+                elif frequency == "weekly":
+                    days = repeat_rule.get("days", [])  # [0,1,2,3,4] for Mon-Fri
+                    if target_weekday in days:
+                        active_routines.append(routine_dict)
+
+                elif frequency == "custom":
+                    # Add more complex rules as needed
+                    pass
+
+            return active_routines
+
+    async def mark_routine_completed_for_date(
+        self,
+        routine_id: str,
+        user_id: str,
+        completion_date: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Mark a routine as completed for a specific date
+
+        Args:
+            routine_id: Routine ID
+            user_id: User ID
+            completion_date: Date when routine was completed
+
+        Returns:
+            Updated routine dict or None if not found
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            routine = session.query(EventModel).filter(
+                EventModel.id == routine_id,
+                EventModel.user_id == user_id
+            ).first()
+
+            if not routine:
+                return None
+
+            # Add completion date
+            if routine.routine_completed_dates is None:
+                routine.routine_completed_dates = []
+
+            date_str = completion_date.strftime("%Y-%m-%d")
+            if date_str not in routine.routine_completed_dates:
+                routine.routine_completed_dates.append(date_str)
+
+            routine.updated_at = datetime.utcnow()
+            session.commit()
+            session.refresh(routine)
+
+            return routine.to_dict()
+
+    async def get_routine_completion_stats(
+        self,
+        routine_id: str,
+        user_id: str,
+        days_back: int = 30
+    ) -> Dict[str, Any]:
+        """
+        Get completion statistics for a routine
+
+        Returns:
+            {
+                "total_days": 30,
+                "completed_days": 25,
+                "completion_rate": 83.3,
+                "current_streak": 7,
+                "longest_streak": 12
+            }
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            routine = session.query(EventModel).filter(
+                EventModel.id == routine_id,
+                EventModel.user_id == user_id
+            ).first()
+
+            if not routine:
+                return None
+
+            completed_dates = routine.routine_completed_dates or []
+            repeat_rule = routine.repeat_rule or {}
+
+            # Calculate expected days based on repeat rule
+            frequency = repeat_rule.get("frequency", "daily")
+
+            if frequency == "daily":
+                days_per_week = 7
+            elif frequency == "weekly":
+                days_per_week = len(repeat_rule.get("days", [0, 1, 2, 3, 4, 5, 6]))
+            else:
+                days_per_week = 7
+
+            # Calculate total expected days in the period
+            total_expected = (days_back / 7) * days_per_week
+            completed_count = len([d for d in completed_dates if (datetime.now() - datetime.strptime(d, "%Y-%m-%d")).days <= days_back])
+
+            completion_rate = (completed_count / total_expected * 100) if total_expected > 0 else 0
+
+            return {
+                "total_days": int(total_expected),
+                "completed_days": completed_count,
+                "completion_rate": round(completion_rate, 1),
+                "completed_dates": completed_dates
+            }
 
 
 # Import uuid at module level

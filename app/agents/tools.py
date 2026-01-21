@@ -329,6 +329,254 @@ def register_all_tools():
         func=tool_revert_snapshot
     )
 
+    # 11. 提供交互式选项工具
+    tool_registry.register(
+        name="provide_suggestions",
+        description="提供交互式选项供用户选择。用于降低用户使用难度，当需要用户输入或选择时，提供可点击的选项。适用于：信息缺失时提供选项、需要确认操作、AI建议时提供多个方案、模糊意图消解等场景。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "suggestions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": {
+                                "type": "string",
+                                "description": "显示给用户的标签文本"
+                            },
+                            "value": {
+                                "type": ["string", "null"],
+                                "description": "实际的值（如果为 null，表示需要用户手动输入）"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "选项的详细描述（可选）"
+                            }
+                        },
+                        "required": ["label"]
+                    },
+                    "description": "选项列表（2-4个选项）"
+                }
+            },
+            "required": ["suggestions"]
+        },
+        func=tool_provide_suggestions
+    )
+
+    # 12. 分析用户偏好工具
+    tool_registry.register(
+        name="analyze_preferences",
+        description="分析用户在特定场景下的历史偏好，预测用户最可能的选择。用于智能决策，基于用户的历史选择数据。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "scenario_type": {
+                    "type": "string",
+                    "description": "场景类型，如：time_conflict（时间冲突）、event_cancellation（取消事件）、reschedule_choice（重新安排选择）等"
+                },
+                "context": {
+                    "type": "object",
+                    "description": "上下文信息（可选），如事件类型、时间段等，用于更精确的匹配"
+                }
+            },
+            "required": ["user_id", "scenario_type"]
+        },
+        func=tool_analyze_preferences
+    )
+
+    # 13. 记录用户偏好工具
+    tool_registry.register(
+        name="record_preference",
+        description="记录用户的决策选择，用于学习用户偏好。在用户做出选择后调用，帮助 AI 逐渐了解用户的行为模式。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "scenario_type": {
+                    "type": "string",
+                    "description": "场景类型"
+                },
+                "decision": {
+                    "type": "string",
+                    "description": "用户做出的选择（如：merge, cancel, reschedule）"
+                },
+                "decision_type": {
+                    "type": "string",
+                    "description": "决策类型"
+                },
+                "context": {
+                    "type": "object",
+                    "description": "上下文信息（可选）"
+                }
+            },
+            "required": ["user_id", "scenario_type", "decision", "decision_type"]
+        },
+        func=tool_record_preference
+    )
+
+    # ============ Routine/Habit Management Tools ============
+
+    # 14. 创建长期日程工具
+    tool_registry.register(
+        name="create_routine",
+        description="创建长期日程/习惯（Routine），用于管理重复性的生活安排，如每天健身、每周阅读等。与普通事件不同，routine具有灵活的重复规则、智能提醒和补课机制。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "长期日程标题（必填）"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "详细描述，AI会根据此内容做智能判断（如：在健身房锻炼1小时，包括热身、力量训练和有氧运动）"
+                },
+                "frequency": {
+                    "type": "string",
+                    "enum": ["daily", "weekly", "custom"],
+                    "description": "重复频率：daily（每天）、weekly（每周，需指定days）、custom（自定义）"
+                },
+                "days": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "当frequency=weekly时，指定星期几（0=周一, 6=周日），如[0,1,2,3,4]表示周一到周五"
+                },
+                "is_flexible": {
+                    "type": "boolean",
+                    "description": "时间是否灵活。True表示每天再决定具体时间，False表示固定时间"
+                },
+                "preferred_time_slots": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "start": {"type": "string", "description": "开始时间，如18:00"},
+                            "end": {"type": "string", "description": "结束时间，如20:00"},
+                            "priority": {"type": "integer", "description": "优先级"}
+                        }
+                    },
+                    "description": "偏好时间段列表，如[{\"start\": \"18:00\", \"end\": \"20:00\", \"priority\": 1}]"
+                },
+                "makeup_strategy": {
+                    "type": "string",
+                    "enum": ["ask_user", "auto_next_day", "auto_same_day_next_week", "skip"],
+                    "description": "补课策略：ask_user（询问用户）、auto_next_day（自动顺延）、auto_same_day_next_week（下周同一天）、skip（跳过）"
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["WORK", "STUDY", "SOCIAL", "LIFE", "HEALTH"],
+                    "description": "类别"
+                },
+                "duration": {
+                    "type": "integer",
+                    "description": "预计时长（分钟）"
+                }
+            },
+            "required": ["user_id", "title", "frequency"]
+        },
+        func=tool_create_routine
+    )
+
+    # 15. 获取所有长期日程工具
+    tool_registry.register(
+        name="get_routines",
+        description="获取用户的所有长期日程/习惯列表",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "active_only": {
+                    "type": "boolean",
+                    "description": "是否只显示活跃的routine（默认True）"
+                }
+            },
+            "required": ["user_id"]
+        },
+        func=tool_get_routines
+    )
+
+    # 16. 获取今天的长期日程工具
+    tool_registry.register(
+        name="get_active_routines_for_today",
+        description="获取今天应该执行的长期日程列表。用于每天早上询问用户今天的routine安排，或者检查哪些routine还未完成。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                }
+            },
+            "required": ["user_id"]
+        },
+        func=tool_get_active_routines_for_today
+    )
+
+    # 17. 标记长期日程已完成工具
+    tool_registry.register(
+        name="mark_routine_completed",
+        description="标记某个长期日程在特定日期已完成。用于记录routine的完成情况，便于统计和追踪。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "routine_id": {
+                    "type": "string",
+                    "description": "长期日程ID"
+                },
+                "completion_date": {
+                    "type": "string",
+                    "description": "完成日期（ISO格式，如2026-01-21，默认为今天）"
+                }
+            },
+            "required": ["user_id", "routine_id"]
+        },
+        func=tool_mark_routine_completed
+    )
+
+    # 18. 获取长期日程统计工具
+    tool_registry.register(
+        name="get_routine_stats",
+        description="获取某个长期日程的完成统计信息，包括完成率、完成天数等。用于向用户展示routine的坚持情况。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "routine_id": {
+                    "type": "string",
+                    "description": "长期日程ID"
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": "统计最近多少天（默认30天）"
+                }
+            },
+            "required": ["user_id", "routine_id"]
+        },
+        func=tool_get_routine_stats
+    )
+
 
 # ============ Tool 实现函数 ============
 
@@ -563,6 +811,299 @@ async def tool_revert_snapshot(user_id: str, snapshot_id: str) -> Dict[str, Any]
         "success": False,
         "error": "快照回滚功能待实现"
     }
+
+
+async def tool_provide_suggestions(
+    suggestions: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    提供交互式选项供用户选择
+
+    这是一个特殊的工具，不执行数据库操作，而是返回建议选项。
+    LLM 使用这个工具来为用户提供可点击的选项，降低使用难度。
+
+    Args:
+        suggestions: 选项列表，每个选项包含:
+            - label: 显示标签
+            - value: 实际值（None 表示需要用户手动输入）
+            - description: 详细描述（可选）
+            - probability: AI 预测的用户选择此选项的概率 0-100（可选）
+
+    Returns:
+        包含 suggestions 的结果
+    """
+    return {
+        "success": True,
+        "suggestions": suggestions,
+        "message": "[OPTIONS] 已生成选项供用户选择"
+    }
+
+
+async def tool_analyze_preferences(
+    user_id: str,
+    scenario_type: str,
+    context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    分析用户在特定场景下的偏好
+
+    用于智能决策：基于历史选择预测用户最可能的选择
+
+    Args:
+        user_id: 用户ID
+        scenario_type: 场景类型（如 "time_conflict", "event_cancellation"）
+        context: 上下文信息（事件类型、时间段等）
+
+    Returns:
+        {
+            "predictions": [
+                {"option": "merge", "probability": 75, "confidence": "high"},
+                ...
+            ],
+            "recommended_action": "merge",  # 如果概率 > 50%
+            "confidence": 75,
+            "sample_size": 12
+        }
+    """
+    from app.services.db import db_service
+
+    analysis = await db_service.analyze_user_preferences(
+        user_id=user_id,
+        scenario_type=scenario_type,
+        context=context
+    )
+
+    return {
+        "success": True,
+        **analysis
+    }
+
+
+async def tool_record_preference(
+    user_id: str,
+    scenario_type: str,
+    decision: str,
+    decision_type: str,
+    context: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    记录用户的决策，用于学习用户偏好
+
+    Args:
+        user_id: 用户ID
+        scenario_type: 场景类型
+        decision: 用户做出的选择
+        decision_type: 决策类型（merge, cancel, reschedule 等）
+        context: 上下文信息
+
+    Returns:
+        记录结果
+    """
+    from app.services.db import db_service
+
+    result = await db_service.record_user_preference(
+        user_id=user_id,
+        scenario_type=scenario_type,
+        decision=decision,
+        decision_type=decision_type,
+        context=context
+    )
+
+    return {
+        "success": True,
+        "preference": result,
+        "message": "[LEARNING] 已记录用户偏好"
+    }
+
+
+# ============ Routine/Habit Management Tools ============
+
+async def tool_create_routine(
+    user_id: str,
+    title: str,
+    description: Optional[str] = None,
+    frequency: str = "daily",
+    days: Optional[List[int]] = None,
+    is_flexible: bool = False,
+    preferred_time_slots: Optional[List[Dict[str, Any]]] = None,
+    makeup_strategy: str = "ask_user",
+    category: str = "LIFE",
+    duration: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    创建长期日程/习惯（Routine）
+
+    用于创建重复性的长期安排，如每天健身、每周阅读等。
+
+    Args:
+        user_id: 用户ID
+        title: 日程标题
+        description: 详细描述（AI会根据此内容做智能判断）
+        frequency: 重复频率 ("daily", "weekly", "custom")
+        days: 当frequency="weekly"时，指定星期几 (0=周一, 6=周日)
+        is_flexible: 时间是否灵活（True表示每天再定时间）
+        preferred_time_slots: 偏好时间段 [{"start": "18:00", "end": "20:00", "priority": 1}]
+        makeup_strategy: 补课策略 ("ask_user", "auto_next_day", "auto_same_day_next_week", "skip")
+        category: 类别
+        duration: 预计时长（分钟）
+
+    Returns:
+        创建的routine
+    """
+    from app.services.db import db_service
+
+    # Build repeat_rule
+    repeat_rule = {"frequency": frequency}
+    if days:
+        repeat_rule["days"] = days
+
+    routine = await db_service.create_routine(
+        user_id=user_id,
+        title=title,
+        description=description,
+        repeat_rule=repeat_rule,
+        is_flexible=is_flexible,
+        preferred_time_slots=preferred_time_slots,
+        makeup_strategy=makeup_strategy,
+        category=category,
+        duration=duration
+    )
+
+    return {
+        "success": True,
+        "routine": routine,
+        "message": f"[ROUTINE] 已创建长期日程：{title}"
+    }
+
+
+async def tool_get_routines(user_id: str, active_only: bool = True) -> Dict[str, Any]:
+    """
+    获取用户的所有长期日程/习惯
+
+    Args:
+        user_id: 用户ID
+        active_only: 是否只显示活跃的
+
+    Returns:
+        Routine列表
+    """
+    from app.services.db import db_service
+
+    routines = await db_service.get_routines(user_id, active_only)
+
+    return {
+        "success": True,
+        "routines": routines,
+        "count": len(routines),
+        "message": f"[ROUTINE] 找到 {len(routines)} 个长期日程"
+    }
+
+
+async def tool_get_active_routines_for_today(user_id: str) -> Dict[str, Any]:
+    """
+    获取今天应该执行的长期日程
+
+    用于每天早上询问用户今天的routine安排。
+
+    Args:
+        user_id: 用户ID
+
+    Returns:
+        今天活跃的routines列表
+    """
+    from app.services.db import db_service
+    from datetime import datetime
+
+    today = datetime.now()
+    routines = await db_service.get_active_routines_for_date(user_id, today)
+
+    return {
+        "success": True,
+        "routines": routines,
+        "count": len(routines),
+        "date": today.strftime("%Y-%m-%d"),
+        "message": f"[ROUTINE] 今天有 {len(routines)} 个长期待办"
+    }
+
+
+async def tool_mark_routine_completed(
+    user_id: str,
+    routine_id: str,
+    completion_date: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    标记长期日程在某天已完成
+
+    Args:
+        user_id: 用户ID
+        routine_id: Routine ID
+        completion_date: 完成日期 (ISO格式，默认今天)
+
+    Returns:
+        更新后的routine
+    """
+    from app.services.db import db_service
+    from datetime import datetime
+
+    if completion_date:
+        date = datetime.fromisoformat(completion_date)
+    else:
+        date = datetime.now()
+
+    routine = await db_service.mark_routine_completed_for_date(
+        routine_id=routine_id,
+        user_id=user_id,
+        completion_date=date
+    )
+
+    if routine:
+        return {
+            "success": True,
+            "routine": routine,
+            "message": f"[ROUTINE] 已标记完成：{routine['title']}"
+        }
+    else:
+        return {
+            "success": False,
+            "error": "Routine not found"
+        }
+
+
+async def tool_get_routine_stats(
+    user_id: str,
+    routine_id: str,
+    days_back: int = 30
+) -> Dict[str, Any]:
+    """
+    获取长期日程的完成统计
+
+    Args:
+        user_id: 用户ID
+        routine_id: Routine ID
+        days_back: 统计最近多少天（默认30天）
+
+    Returns:
+        统计信息
+    """
+    from app.services.db import db_service
+
+    stats = await db_service.get_routine_completion_stats(
+        routine_id=routine_id,
+        user_id=user_id,
+        days_back=days_back
+    )
+
+    if stats:
+        return {
+            "success": True,
+            "stats": stats,
+            "message": f"[ROUTINE] 完成率：{stats['completion_rate']}%"
+        }
+    else:
+        return {
+            "success": False,
+            "error": "Routine not found"
+        }
 
 
 # 初始化时注册所有工具

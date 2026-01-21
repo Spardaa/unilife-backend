@@ -27,7 +27,7 @@ class JarvisAgent:
     def __init__(self):
         self.llm = llm_service
         self.tools = tool_registry
-        self.max_iterations = 5  # 防止无限循环
+        self.max_iterations = 30  # 支持复杂任务规划、多步骤决策
 
     async def chat(
         self,
@@ -124,11 +124,15 @@ class JarvisAgent:
         # 提取操作记录
         actions = self._extract_actions(tool_results)
 
+        # 提取建议选项
+        suggestions = self._extract_suggestions(tool_results)
+
         return {
             "reply": content or "抱歉，我没有理解您的需求。",
             "actions": actions,
             "tool_calls": all_tool_calls,
-            "conversation_history": messages
+            "conversation_history": messages,
+            "suggestions": suggestions
         }
 
     def _build_messages(
@@ -137,16 +141,55 @@ class JarvisAgent:
         history: List[Dict[str, Any]],
         user_message: str
     ) -> List[Dict[str, Any]]:
-        """构建消息列表（不包含 system prompt）"""
+        """构建消息列表（不包含 system prompt）
+
+        重要：必须保留完整的对话历史，包括 tool_calls 和 tool 消息，
+        否则 AI 无法理解上下文和之前的操作。
+        """
         messages = []
 
-        # 添加历史消息（简化处理）
-        for msg in history[-10:]:  # 只保留最近10条
-            if msg.get("role") in ["user", "assistant"]:
+        # 跟踪最后一条 assistant 消息是否有 tool_calls
+        last_assistant_had_tool_calls = False
+
+        # 添加历史消息（保留最近15条，包含所有角色）
+        for msg in history[-15:]:
+            role = msg.get("role")
+
+            if role == "user":
                 messages.append({
-                    "role": msg["role"],
+                    "role": "user",
                     "content": msg.get("content", "")
                 })
+                last_assistant_had_tool_calls = False
+
+            elif role == "assistant":
+                # Assistant 消息可能包含 content 和 tool_calls
+                assistant_msg = {}
+                if msg.get("content"):
+                    assistant_msg["content"] = msg["content"]
+
+                # 保留 tool_calls（AI 调用的工具）
+                if msg.get("tool_calls"):
+                    assistant_msg["tool_calls"] = msg["tool_calls"]
+                    last_assistant_had_tool_calls = True
+                else:
+                    last_assistant_had_tool_calls = False
+
+                # 只有当有 content 或 tool_calls 时才添加
+                if assistant_msg:
+                    assistant_msg["role"] = "assistant"
+                    messages.append(assistant_msg)
+
+            elif role == "tool":
+                # 工具执行结果 - 只有在前面有 tool_calls 时才保留
+                # 这是 API 要求：tool 消息必须响应前面的 tool_calls
+                if last_assistant_had_tool_calls:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": msg.get("tool_call_id"),
+                        "content": msg.get("content", "")
+                    })
+                # 否则跳过这个 tool 消息（数据不完整）
 
         # 添加当前用户消息
         messages.append({
@@ -244,6 +287,13 @@ class JarvisAgent:
                     })
 
         return actions
+
+    def _extract_suggestions(self, tool_results: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """从工具结果中提取建议选项（用于交互式对话）"""
+        for result in tool_results:
+            if result.get("success") and "suggestions" in result:
+                return result["suggestions"]
+        return None
 
 
 # 全局 Jarvis Agent 实例
