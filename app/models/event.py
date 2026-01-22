@@ -1,7 +1,7 @@
 """
 Event Model - Database model for schedule events
 """
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -131,7 +131,34 @@ class Event(BaseModel):
     # Time information (all optional to support different event types)
     start_time: Optional[datetime] = Field(None, description="Start time")
     end_time: Optional[datetime] = Field(None, description="End time or deadline")
-    duration: Optional[int] = Field(None, description="Estimated duration in minutes")
+    duration: Optional[int] = Field(None, description="Duration in minutes")
+
+    # ==================== Dual Time Architecture Fields ====================
+    # Duration source tracking
+    duration_source: Literal["user_exact", "ai_estimate", "default", "user_adjusted"] = Field(
+        default="default",
+        description="Source of duration: user_exact (explicit), ai_estimate (AI learned), default (fallback), user_adjusted (modified from AI)"
+    )
+    duration_confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence of duration estimate (0.0-1.0). <0.7 shows 'AI estimate' label"
+    )
+    duration_actual: Optional[int] = Field(
+        None,
+        description="Actual duration after completion (minutes), recorded for AI learning"
+    )
+    ai_original_estimate: Optional[int] = Field(
+        None,
+        description="Original AI estimate before user adjustment (only set when duration_source='user_adjusted')"
+    )
+
+    # Display preference
+    display_mode: Literal["flexible", "rigid"] = Field(
+        default="flexible",
+        description="Display mode: flexible (show as '10:00 Event (~1 hour)') or rigid (show as '10:00-11:00 Event')"
+    )
 
     # Scheduling attributes
     energy_required: EnergyLevel = Field(default=EnergyLevel.MEDIUM, description="Required energy level")

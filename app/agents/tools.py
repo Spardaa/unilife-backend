@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from app.services.db import db_service
 from app.models.event import EventType, Category, EventStatus, EnergyLevel
+from app.agents.duration_estimator import duration_estimator_agent
 
 
 class ToolRegistry:
@@ -828,18 +829,62 @@ async def tool_create_event(
     category: str = "WORK",
     location: Optional[str] = None
 ) -> Dict[str, Any]:
-    """创建新事件"""
+    """创建新事件（集成AI时长估计）"""
+
+    # 解析时间
+    start_dt = datetime.fromisoformat(start_time) if start_time else None
+    end_dt = datetime.fromisoformat(end_time) if end_time else None
+
+    # 时长估计逻辑
+    duration_source = "user_exact"
+    duration_confidence = 1.0
+    ai_original_estimate = None
+
+    # 如果用户没有提供时长和结束时间，AI估计
+    if duration is None and end_dt is None and start_dt:
+        # 获取用户最近的事件用于学习
+        recent_events = await db_service.get_events(user_id, limit=10)
+
+        # AI估计时长
+        estimate = await duration_estimator_agent.estimate(
+            event_title=title,
+            event_description=description,
+            user_id=user_id,
+            recent_events=recent_events
+        )
+
+        duration = estimate.duration
+        duration_source = estimate.source
+        duration_confidence = estimate.confidence
+
+        # 计算结束时间
+        end_dt = start_dt + timedelta(minutes=duration)
+
+    # 如果提供了结束时间但没提供时长，计算时长
+    elif duration is None and end_dt and start_dt:
+        duration = int((end_dt - start_dt).total_seconds() / 60)
+        duration_source = "user_exact"
+        duration_confidence = 1.0
+
+    # 如果提供了时长但没提供结束时间，计算结束时间
+    elif duration and end_dt is None and start_dt:
+        end_dt = start_dt + timedelta(minutes=duration)
+
     event_data = {
         "user_id": user_id,
         "title": title,
         "description": description,
-        "start_time": datetime.fromisoformat(start_time) if start_time else None,
-        "end_time": datetime.fromisoformat(end_time) if end_time else None,
+        "start_time": start_dt,
+        "end_time": end_dt,
         "duration": duration,
+        "duration_source": duration_source,
+        "duration_confidence": duration_confidence,
+        "ai_original_estimate": ai_original_estimate,
+        "display_mode": "flexible",  # 默认柔性显示
         "energy_required": energy_required,
         "urgency": urgency,
         "importance": importance,
-        "event_type": EventType.SCHEDULE.value if start_time else EventType.FLOATING.value,
+        "event_type": EventType.SCHEDULE.value if start_dt else EventType.FLOATING.value,
         "category": category,
         "location": location,
         "tags": [],
@@ -850,10 +895,20 @@ async def tool_create_event(
     }
 
     created_event = await db_service.create_event(event_data)
+
+    # 返回消息，根据时长来源显示不同信息
+    message = f"已创建事件：{title}"
+    if duration_source == "ai_estimate" and duration_confidence < 0.7:
+        message += f"（时长约{duration}分钟，AI估计）"
+    elif duration_source == "ai_estimate":
+        message += f"（约{duration}分钟）"
+    elif duration:
+        message += f"（{duration}分钟）"
+
     return {
         "success": True,
         "event": created_event,
-        "message": f"已创建事件：{title}"
+        "message": message
     }
 
 
@@ -990,35 +1045,106 @@ async def tool_get_schedule_overview(user_id: str) -> Dict[str, Any]:
 async def tool_check_time_conflicts(
     user_id: str,
     start_time: str,
-    end_time: str
+    end_time: str,
+    duration_source: str = "user_exact"
 ) -> Dict[str, Any]:
-    """检查时间冲突"""
+    """
+    检查时间冲突（支持柔性提示）
+
+    Args:
+        user_id: 用户ID
+        start_time: 开始时间（ISO格式）
+        end_time: 结束时间（ISO格式）
+        duration_source: 时长来源，用于确定提示级别
+    """
     conflicts = await db_service.check_time_conflict(
         user_id=user_id,
         start_time=datetime.fromisoformat(start_time),
         end_time=datetime.fromisoformat(end_time)
     )
 
+    # 根据时长来源调整冲突提示
+    has_conflicts = len(conflicts) > 0
+    message = ""
+
+    if has_conflicts:
+        # 检查是否有AI估计时长的事件
+        has_ai_estimate = any(
+            c.get("duration_source") == "ai_estimate"
+            for c in conflicts
+        )
+
+        if has_ai_estimate or duration_source == "ai_estimate":
+            message = f"可能发现 {len(conflicts)} 个时间冲突（AI估计时长，实际可能不冲突）"
+        else:
+            message = f"发现 {len(conflicts)} 个时间冲突"
+    else:
+        message = "没有时间冲突"
+
     return {
         "success": True,
-        "has_conflicts": len(conflicts) > 0,
+        "has_conflicts": has_conflicts,
         "conflicts": conflicts,
-        "message": f"发现 {len(conflicts)} 个时间冲突" if conflicts else "没有时间冲突"
+        "message": message
     }
 
 
-async def tool_complete_event(user_id: str, event_id: str) -> Dict[str, Any]:
-    """完成事件"""
-    updated = await db_service.update_event(
-        event_id, user_id,
-        {"status": EventStatus.COMPLETED.value}
-    )
+async def tool_complete_event(user_id: str, event_id: str, actual_duration: Optional[int] = None) -> Dict[str, Any]:
+    """
+    完成事件（集成AI学习）
+
+    Args:
+        user_id: 用户ID
+        event_id: 事件ID
+        actual_duration: 实际时长（分钟），可选。如果不提供，则自动计算
+    """
+
+    # 获取事件信息
+    event = await db_service.get_event(event_id, user_id)
+    if not event:
+        return {
+            "success": False,
+            "error": "事件不存在"
+        }
+
+    # 计算实际时长
+    if actual_duration is None:
+        # 如果提供了实际结束时间，计算时长
+        # TODO: 这里可以添加一个 completed_at 字段来记录实际完成时间
+        # 暂时使用预计时长
+        actual_duration = event.get("duration", 0)
+
+    # 准备更新数据
+    update_data = {
+        "status": EventStatus.COMPLETED.value,
+        "duration_actual": actual_duration
+    }
+
+    # 如果是AI估计的，进行学习
+    if event.get("duration_source") == "ai_estimate":
+        estimated_duration = event.get("duration", 0)
+        if estimated_duration > 0:
+            # 调用学习
+            await duration_estimator_agent.learn_from_completion(
+                event_id=event_id,
+                event_title=event.get("title", ""),
+                estimated_duration=estimated_duration,
+                actual_duration=actual_duration,
+                user_id=user_id
+            )
+
+    # 更新事件
+    updated = await db_service.update_event(event_id, user_id, update_data)
 
     if updated:
+        message = f"已完成事件：{updated['title']}"
+        if actual_duration:
+            message += f"（实际用时{actual_duration}分钟）"
+
         return {
             "success": True,
             "event": updated,
-            "message": f"已完成事件：{updated['title']}"
+            "message": message
         }
     else:
         return {

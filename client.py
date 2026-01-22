@@ -291,7 +291,7 @@ def check_server_health() -> bool:
 
 
 def format_events_display(events_data: dict):
-    """格式化显示事件列表"""
+    """格式化显示事件列表（使用双层时间架构）"""
     events = events_data.get("events", [])
 
     if not events:
@@ -304,22 +304,60 @@ def format_events_display(events_data: dict):
         title = event.get("title", "Untitled")
         status = event.get("status", "UNKNOWN")
         start_time = event.get("start_time")
-        end_time = event.get("end_time")
-
-        # 格式化时间
-        time_str = ""
-        if start_time and end_time:
-            start = datetime.fromisoformat(start_time).strftime("%m/%d %H:%M")
-            end = datetime.fromisoformat(end_time).strftime("%H:%M")
-            time_str = f"{start} - {end}"
-        elif end_time:
-            ddl = datetime.fromisoformat(end_time).strftime("%m/%d %H:%M")
-            time_str = f"截止: {ddl}"
+        duration = event.get("duration")
+        duration_source = event.get("duration_source", "default")
+        duration_confidence = event.get("duration_confidence", 1.0)
+        display_mode = event.get("display_mode", "flexible")
 
         # 状态图标
         status_icon = "✓" if status == "COMPLETED" else "○"
 
-        print(f"{status_icon} {i}. {Colors.BOLD}{title}{Colors.END} ({time_str})")
+        # 解析开始时间
+        if start_time:
+            start_dt = datetime.fromisoformat(start_time)
+            time_str = start_dt.strftime("%H:%M")
+        else:
+            time_str = "待定"
+            duration = None
+
+        # 格式化时长显示（双层架构）
+        if display_mode == "flexible" and duration:
+            # 判断是否显示"AI估计"标注（置信度阈值 0.7）
+            show_ai_note = (
+                duration_source == "ai_estimate" and
+                duration_confidence < 0.7
+            )
+
+            # 友好的时长显示
+            if duration < 60:
+                duration_text = f"{duration}分钟"
+            elif duration % 60 == 0:
+                duration_text = f"{duration // 60}小时"
+            else:
+                hours = duration // 60
+                mins = duration % 60
+                duration_text = f"{hours}小时{mins}分钟"
+
+            # 根据时长来源和置信度显示
+            if show_ai_note:
+                time_display = f"{time_str} {title}（约{duration_text}，AI估计）"
+            elif duration_source == "ai_estimate":
+                time_display = f"{time_str} {title}（约{duration_text}）"
+            elif duration_source == "default":
+                time_display = f"{time_str} {title}（约{duration_text}）"
+            else:
+                time_display = f"{time_str} {title}（{duration_text}）"
+
+            print(f"{status_icon} {i}. {Colors.BOLD}{time_display}{Colors.END}")
+        elif duration:
+            # 兜底显示
+            if duration < 60:
+                duration_text = f"{duration}分钟"
+            else:
+                duration_text = f"{duration // 60}小时"
+            print(f"{status_icon} {i}. {Colors.BOLD}{time_str} {title}{Colors.END}（{duration_text}）")
+        else:
+            print(f"{status_icon} {i}. {Colors.BOLD}{time_str} {title}{Colors.END}")
 
     print()
 
