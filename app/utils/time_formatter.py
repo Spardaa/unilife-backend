@@ -3,7 +3,7 @@ Time Formatter - 双层时间架构显示辅助函数
 支持柔性显示和刚性显示两种模式
 """
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 
 def format_duration_minutes(minutes: int) -> str:
@@ -63,6 +63,13 @@ def format_event_time_dual_mode(
     # 提取时间部分
     time_str = start_time.strftime("%H:%M")
 
+    # 计算预计结束时间
+    estimated_end = None
+    if duration:
+        estimated_end = start_time + timedelta(minutes=duration)
+    elif end_time:
+        estimated_end = end_time
+
     # 刚性显示模式
     if display_mode == "rigid" or display_mode == "auto":
         # 刚性显示：10:00-11:00 标题
@@ -78,23 +85,46 @@ def format_event_time_dual_mode(
     if display_mode == "flexible":
         duration_text = format_duration_minutes(duration) if duration else "时长待定"
 
-        # 判断是否显示"AI估计"标注
-        # 置信度阈值：0.7
-        show_ai_note = (
-            duration_source == "ai_estimate" and
-            duration_confidence < 0.7
-        )
+        # 构建基础部分
+        base_parts = [time_str, title]
 
-        if show_ai_note:
-            return f"{time_str} {title}（约{duration_text}，AI估计）"
-        elif duration_source == "ai_estimate":
-            # 高置信度的AI估计，不显示标注
-            return f"{time_str} {title}（约{duration_text}）"
-        elif duration_source == "default":
-            return f"{time_str} {title}（约{duration_text}）"
-        else:
-            # user_exact 或 user_adjusted
-            return f"{time_str} {title}（{duration_text}）"
+        # 添加时长信息
+        if duration:
+            # 判断是否显示"AI估计"标注
+            # 置信度阈值：0.7
+            show_ai_note = (
+                duration_source == "ai_estimate" and
+                duration_confidence < 0.7
+            )
+
+            if show_ai_note:
+                base_parts.append(f"约{duration_text}，AI估计")
+            elif duration_source == "ai_estimate":
+                # 高置信度的AI估计，不显示标注
+                base_parts.append(f"约{duration_text}")
+            elif duration_source == "default":
+                base_parts.append(f"约{duration_text}")
+            else:
+                # user_exact 或 user_adjusted
+                base_parts.append(f"{duration_text}")
+
+        # 添加预计结束时间
+        if estimated_end:
+            end_str = estimated_end.strftime("%H:%M")
+            if duration_source == "ai_estimate" and duration_confidence < 0.7:
+                # AI低置信度，使用"预计"
+                base_parts.append(f"预计到{end_str}左右")
+            else:
+                # 其他情况，使用"到"
+                base_parts.append(f"到{end_str}左右")
+
+        # 组合显示
+        result = " ".join(base_parts[:2])  # 时间 + 标题
+        if len(base_parts) > 2:  # 有时长和/或结束时间
+            info = "，".join(base_parts[2:])  # 时长，结束时间
+            result += f"（{info}）"
+
+        return result
 
     # 兜底
     return f"{time_str} {title}"

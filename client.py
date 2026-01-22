@@ -320,8 +320,13 @@ def format_events_display(events_data: dict):
             time_str = "待定"
             duration = None
 
-        # 格式化时长显示（双层架构）
+        # 格式化时长显示（双层架构 + 预计结束时间）
         if display_mode == "flexible" and duration:
+            # 计算预计结束时间
+            from datetime import timedelta
+            estimated_end = start_dt + timedelta(minutes=duration)
+            end_str = estimated_end.strftime("%H:%M")
+
             # 判断是否显示"AI估计"标注（置信度阈值 0.7）
             show_ai_note = (
                 duration_source == "ai_estimate" and
@@ -338,15 +343,26 @@ def format_events_display(events_data: dict):
                 mins = duration % 60
                 duration_text = f"{hours}小时{mins}分钟"
 
-            # 根据时长来源和置信度显示
+            # 构建显示：时长 + 预计结束时间
+            info_parts = []
             if show_ai_note:
-                time_display = f"{time_str} {title}（约{duration_text}，AI估计）"
+                info_parts.append(f"约{duration_text}，AI估计")
             elif duration_source == "ai_estimate":
-                time_display = f"{time_str} {title}（约{duration_text}）"
+                info_parts.append(f"约{duration_text}")
             elif duration_source == "default":
-                time_display = f"{time_str} {title}（约{duration_text}）"
+                info_parts.append(f"约{duration_text}")
             else:
-                time_display = f"{time_str} {title}（{duration_text}）"
+                info_parts.append(duration_text)
+
+            # 添加预计结束时间
+            if duration_source == "ai_estimate" and duration_confidence < 0.7:
+                info_parts.append(f"预计到{end_str}左右")
+            else:
+                info_parts.append(f"到{end_str}左右")
+
+            # 组合显示
+            info = "，".join(info_parts)
+            time_display = f"{time_str} {title}（{info}）"
 
             print(f"{status_icon} {i}. {Colors.BOLD}{time_display}{Colors.END}")
         elif duration:
