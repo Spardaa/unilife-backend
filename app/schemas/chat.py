@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., description="User's natural language message")
     conversation_id: Optional[str] = Field(None, description="Conversation ID (None will create a new conversation)")
     context: Optional[ChatContext] = Field(None, description="Optional context")
+    current_time: Optional[str] = Field(None, description="Virtual current time for testing (format: YYYY-MM-DD HH:MM:SS)")
 
 
 class ActionResult(BaseModel):

@@ -8,7 +8,22 @@
       "Bash(timeout:*)",
       "Bash(sqlite3:*)",
       "Bash(git reset:*)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "Bash(test:*)",
+      "Bash(pip install:*)",
+      "Bash(lsof:*)",
+      "Bash(pkill:*)",
+      "Bash(xargs kill:*)",
+      "Bash(curl:*)",
+      "Bash(done)",
+      "Bash(python3:*)",
+      "Bash(for i in {1..4})",
+      "Bash(do echo \"=== 检查 $i ===\")",
+      "Bash(xargs ps:*)",
+      "Bash(scutil:*)",
+      "Bash(ping:*)",
+      "Bash(env)",
+      "Bash(wc:*)"
     ]
   }
 }

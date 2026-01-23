@@ -12,10 +12,8 @@ from app.models.event import ExtractedPoint
 
 class RelationshipProfile(BaseModel):
     """关系状态画像"""
-    status: str = Field(default="unknown", description="single | dating | married | complicated | unknown")
-    confidence: float = Field(default=0.0, ge=0, le=1, description="置信度")
-    evidence_count: int = Field(default=0, description="支持证据数量")
-    recent_evidence: List[str] = Field(default_factory=list, description="最近的证据")
+    status: List[str] = Field(default_factory=list, description="关系状态列表，可包含: single, has_friends, dating, married, has_family, complicated, unknown")
+    confidence: float = Field(default=0.0, ge=0, le=1, description="整体置信度")
 
 
 class IdentityProfile(BaseModel):
@@ -68,10 +66,8 @@ class UserProfile(BaseModel):
             "example": {
                 "user_id": "user-123",
                 "relationships": {
-                    "status": "dating",
-                    "confidence": 0.8,
-                    "evidence_count": 5,
-                    "recent_evidence": ["约会", "情人节礼物"]
+                    "status": ["has_friends", "dating"],
+                    "confidence": 0.9
                 },
                 "identity": {
                     "occupation": "程序员",
@@ -125,24 +121,27 @@ class UserProfile(BaseModel):
 
     def _update_relationship(self, point: ExtractedPoint):
         """更新关系状态"""
-        # 简单策略：如果新点置信度更高，覆盖；否则累积证据
+        # 简单策略：如果新点置信度更高，更新状态列表
         if point.confidence > self.relationships.confidence:
             self.relationships.confidence = point.confidence
             # 从 content 提取 status
             content_lower = point.content.lower()
+            new_statuses = []
             if "单身" in content_lower or "single" in content_lower:
-                self.relationships.status = "single"
-            elif "约会" in content_lower or "dating" in content_lower or "恋人" in content_lower:
-                self.relationships.status = "dating"
-            elif "已婚" in content_lower or "结婚" in content_lower:
-                self.relationships.status = "married"
+                new_statuses.append("single")
+            if "约会" in content_lower or "dating" in content_lower or "恋人" in content_lower:
+                new_statuses.append("dating")
+            if "已婚" in content_lower or "结婚" in content_lower:
+                new_statuses.append("married")
+            if "朋友" in content_lower or "friend" in content_lower:
+                new_statuses.append("has_friends")
+            if "家人" in content_lower or "family" in content_lower or "父母" in content_lower or "parent" in content_lower:
+                new_statuses.append("has_family")
 
-        self.relationships.evidence_count += 1
-        for evidence in point.evidence:
-            if evidence not in self.relationships.recent_evidence:
-                self.relationships.recent_evidence.insert(0, evidence)
-                if len(self.relationships.recent_evidence) > 10:
-                    self.relationships.recent_evidence.pop()
+            # 合并状态（去重）
+            for s in new_statuses:
+                if s not in self.relationships.status:
+                    self.relationships.status.append(s)
 
     def _update_identity(self, point: ExtractedPoint):
         """更新用户身份"""

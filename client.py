@@ -9,6 +9,10 @@ import os
 from datetime import datetime
 from typing import Optional
 
+# 禁用代理访问本地服务
+session = requests.Session()
+session.trust_env = False  # 忽略系统代理设置
+
 # Fix Windows terminal encoding
 if sys.platform == "win32":
     import io
@@ -177,7 +181,7 @@ def login() -> str:
 def send_chat_message(message: str, user_id: str) -> Optional[dict]:
     """发送聊天消息到后端"""
     try:
-        response = requests.post(
+        response = session.post(
             f"{API_BASE_URL}/chat",
             json={
                 "message": message,
@@ -207,7 +211,7 @@ def send_chat_message(message: str, user_id: str) -> Optional[dict]:
 def get_chat_history(user_id: str) -> Optional[dict]:
     """获取对话历史"""
     try:
-        response = requests.get(
+        response = session.get(
             f"{API_BASE_URL}/chat/history",
             params={"user_id": user_id, "limit": 50}
         )
@@ -226,7 +230,7 @@ def get_chat_history(user_id: str) -> Optional[dict]:
 def clear_chat_history(user_id: str) -> bool:
     """清除对话历史"""
     try:
-        response = requests.delete(
+        response = session.delete(
             f"{API_BASE_URL}/chat/history",
             params={"user_id": user_id}
         )
@@ -245,7 +249,7 @@ def clear_chat_history(user_id: str) -> bool:
 def get_all_events(user_id: str) -> Optional[dict]:
     """获取所有事件"""
     try:
-        response = requests.get(
+        response = session.get(
             f"{API_BASE_URL}/events",
             params={"user_id": user_id}
         )
@@ -264,7 +268,7 @@ def get_all_events(user_id: str) -> Optional[dict]:
 def get_snapshots(user_id: str) -> Optional[dict]:
     """获取快照历史"""
     try:
-        response = requests.get(
+        response = session.get(
             f"{API_BASE_URL}/snapshots",
             params={"user_id": user_id}
         )
@@ -284,7 +288,7 @@ def check_server_health() -> bool:
     """检查服务器健康状态"""
     try:
         # Health check is at root, not under /api/v1
-        response = requests.get("http://localhost:8000/health", timeout=5)
+        response = session.get("http://localhost:8000/health", timeout=5)
         return response.status_code == 200
     except:
         return False

@@ -69,7 +69,8 @@ async def chat(request: ChatRequest):
         result = await jarvis_agent.chat(
             user_message=request.message,
             user_id=request.user_id,
-            conversation_history=context_messages
+            conversation_history=context_messages,
+            current_time=request.current_time  # Pass virtual time for testing
         )
 
         reply = result["reply"]

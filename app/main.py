@@ -6,7 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api import chat, events, users, snapshots, stats
+from app.api import chat, events, users, snapshots, stats, diaries
+from app.scheduler.background_tasks import task_scheduler
 
 
 @asynccontextmanager
@@ -17,10 +18,15 @@ async def lifespan(app: FastAPI):
     print(f"🔧 Debug mode: {settings.debug}")
     print(f"🌐 API listening on http://{settings.api_host}:{settings.api_port}")
 
+    # Start background task scheduler
+    task_scheduler.start()
+
     yield
 
     # Shutdown
     print("🛑 UniLife Backend shutting down...")
+    # Stop background task scheduler
+    task_scheduler.stop()
 
 
 # Create FastAPI application
@@ -46,6 +52,7 @@ app.include_router(events.router, prefix="/api/v1", tags=["Events"])
 app.include_router(users.router, prefix="/api/v1", tags=["Users"])
 app.include_router(snapshots.router, prefix="/api/v1", tags=["Snapshots"])
 app.include_router(stats.router, prefix="/api/v1", tags=["Stats"])
+app.include_router(diaries.router, prefix="/api/v1/diaries", tags=["Diaries"])
 
 
 @app.get("/")

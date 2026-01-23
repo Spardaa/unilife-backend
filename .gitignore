@@ -34,3 +34,7 @@ htmlcov/
 # Database
 *.db
 *.sqlite3
+*.db
+__pycache__/
+.pytest_cache/
+.unilife_user_id.txt
