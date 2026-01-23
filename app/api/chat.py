@@ -1,6 +1,6 @@
 """
-Chat API - Conversational interface for Jarvis (重构版)
-使用新的 Jarvis Agent (LLM + Tools 架构)
+Chat API - Conversational interface for UniLife (多智能体架构版)
+使用 AgentOrchestrator 协调 Router、Executor、Persona、Observer
 """
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException
@@ -10,7 +10,7 @@ from app.schemas.chat import (
     ChatRequest, ChatResponse, ActionResult,
     CreateConversationRequest, ConversationResponse, MessageResponse
 )
-from app.agents.jarvis import jarvis_agent
+from app.agents.orchestrator import agent_orchestrator
 from app.services.snapshot import snapshot_manager
 from app.services.conversation_service import conversation_service
 
@@ -20,13 +20,13 @@ router = APIRouter()
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Main conversational endpoint for Jarvis
+    Main conversational endpoint for UniLife
 
-    新架构说明：
-    - 使用 Jarvis Agent（LLM + Tools）
-    - 自动推理和工具调用
-    - 支持多步对话和上下文理解
-    - 对话历史持久化到数据库
+    多智能体架构说明：
+    - Router → 识别意图，决定路由
+    - Executor → 执行工具调用（如果需要）
+    - Persona → 生成拟人化回复
+    - Observer → 异步分析，更新画像
 
     如果提供 conversation_id，继续现有对话
     如果不提供，创建新对话
@@ -50,13 +50,6 @@ async def chat(request: ChatRequest):
         )
         conversation_id = conversation.id
 
-    # 从数据库获取智能上下文
-    context_messages = conversation_service.get_context_for_llm(
-        conversation_id=conversation_id,
-        max_messages=20,
-        max_tokens=8000
-    )
-
     # 保存用户消息
     conversation_service.add_message(
         conversation_id=conversation_id,
@@ -65,11 +58,11 @@ async def chat(request: ChatRequest):
     )
 
     try:
-        # Call Jarvis Agent
-        result = await jarvis_agent.chat(
+        # Call Agent Orchestrator
+        result = await agent_orchestrator.process_message(
             user_message=request.message,
             user_id=request.user_id,
-            conversation_history=context_messages,
+            conversation_id=conversation_id,
             current_time=request.current_time  # Pass virtual time for testing
         )
 
@@ -77,6 +70,7 @@ async def chat(request: ChatRequest):
         actions = result.get("actions", [])
         tool_calls = result.get("tool_calls", [])
         suggestions = result.get("suggestions")
+        routing_metadata = result.get("routing_metadata", {})
 
         # 保存助手回复（不含 tool_calls，因为后面会单独保存）
         assistant_msg_id = conversation_service.add_message(
@@ -85,9 +79,8 @@ async def chat(request: ChatRequest):
             content=reply
         ).id
 
-        # 保存 tool_calls 和 tool 消息
+        # 保存 tool_calls（如果有）
         if tool_calls:
-            # 更新 assistant 消息，添加 tool_calls
             import json
             from app.services.conversation_service import Message
             db = conversation_service.get_session()
@@ -98,11 +91,6 @@ async def chat(request: ChatRequest):
                     db.commit()
             finally:
                 db.close()
-
-            # 保存每个 tool 的调用结果（如果有的话）
-            # 注意：tool_calls 中的结果已经在 jarvis_agent 中执行过了
-            # 这里我们需要从 result 中获取这些结果
-            # 为了简化，我们假设 result["actions"] 中包含了相关信息
 
         # Create snapshot if there were modifying actions
         snapshot_id = None

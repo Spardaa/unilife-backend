@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.services.diary_service import diary_service
-from app.agents.daily_diary_generator import daily_diary_generator
+from app.agents.observer import observer_agent
 from app.services.profile_refinement_service import profile_refinement_service
 from app.models.profile_analysis import JobType
 from app.models.diary import DiaryStats
@@ -180,7 +180,7 @@ async def generate_diary(request: DiaryGenerateRequest):
             )
 
         # 生成日记
-        result = await daily_diary_generator.generate_daily_diary(
+        result = await observer_agent.generate_daily_diary(
             user_id=request.user_id,
             target_date=target_date
         )

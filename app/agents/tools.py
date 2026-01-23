@@ -90,6 +90,11 @@ def register_all_tools():
                     "type": "integer",
                     "description": "持续时长（分钟）"
                 },
+                "duration_source": {
+                    "type": "string",
+                    "enum": ["user_exact", "ai_estimate", "default", "user_adjusted"],
+                    "description": "时长来源（可选，通常由系统自动设置）"
+                },
                 "energy_required": {
                     "type": "string",
                     "enum": ["HIGH", "MEDIUM", "LOW"],
@@ -823,6 +828,7 @@ async def tool_create_event(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     duration: Optional[int] = None,
+    duration_source: Optional[str] = None,
     energy_required: str = "MEDIUM",
     urgency: int = 3,
     importance: int = 3,
@@ -836,26 +842,33 @@ async def tool_create_event(
     end_dt = datetime.fromisoformat(end_time) if end_time else None
 
     # 时长估计逻辑
-    duration_source = "user_exact"
+    _duration_source = duration_source or "user_exact"
     duration_confidence = 1.0
     ai_original_estimate = None
 
     # 如果用户没有提供时长和结束时间，AI估计
     if duration is None and end_dt is None and start_dt:
-        # 获取用户最近的事件用于学习
-        recent_events = await db_service.get_events(user_id, limit=10)
+        # 如果用户已经指定了 duration_source 为非 default 值，不进行 AI 估计
+        if _duration_source != "user_exact":
+            # 使用默认时长
+            duration = 60
+            _duration_source = "default"
+            duration_confidence = 0.5
+        else:
+            # 获取用户最近的事件用于学习
+            recent_events = await db_service.get_events(user_id, limit=10)
 
-        # AI估计时长
-        estimate = await duration_estimator_agent.estimate(
-            event_title=title,
-            event_description=description,
-            user_id=user_id,
-            recent_events=recent_events
-        )
+            # AI估计时长
+            estimate = await duration_estimator_agent.estimate(
+                event_title=title,
+                event_description=description,
+                user_id=user_id,
+                recent_events=recent_events
+            )
 
-        duration = estimate.duration
-        duration_source = estimate.source
-        duration_confidence = estimate.confidence
+            duration = estimate.duration
+            _duration_source = estimate.source
+            duration_confidence = estimate.confidence
 
         # 计算结束时间
         end_dt = start_dt + timedelta(minutes=duration)
@@ -863,12 +876,17 @@ async def tool_create_event(
     # 如果提供了结束时间但没提供时长，计算时长
     elif duration is None and end_dt and start_dt:
         duration = int((end_dt - start_dt).total_seconds() / 60)
-        duration_source = "user_exact"
+        _duration_source = "user_exact"
         duration_confidence = 1.0
 
     # 如果提供了时长但没提供结束时间，计算结束时间
     elif duration and end_dt is None and start_dt:
         end_dt = start_dt + timedelta(minutes=duration)
+        if _duration_source == "user_exact":
+            _duration_source = "user_exact"
+        elif _duration_source == "default":
+            _duration_source = "user_exact"
+            duration_confidence = 1.0
 
     event_data = {
         "user_id": user_id,
@@ -877,7 +895,7 @@ async def tool_create_event(
         "start_time": start_dt,
         "end_time": end_dt,
         "duration": duration,
-        "duration_source": duration_source,
+        "duration_source": _duration_source,
         "duration_confidence": duration_confidence,
         "ai_original_estimate": ai_original_estimate,
         "display_mode": "flexible",  # 默认柔性显示
@@ -898,9 +916,9 @@ async def tool_create_event(
 
     # 返回消息，根据时长来源显示不同信息
     message = f"已创建事件：{title}"
-    if duration_source == "ai_estimate" and duration_confidence < 0.7:
+    if _duration_source == "ai_estimate" and duration_confidence < 0.7:
         message += f"（时长约{duration}分钟，AI估计）"
-    elif duration_source == "ai_estimate":
+    elif _duration_source == "ai_estimate":
         message += f"（约{duration}分钟）"
     elif duration:
         message += f"（{duration}分钟）"

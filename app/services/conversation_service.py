@@ -346,6 +346,86 @@ class ConversationService:
         finally:
             db.close()
 
+    async def get_recent_context(
+        self,
+        user_id: str,
+        conversation_id: str,
+        hours: int = 72,
+        max_messages: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        获取近 N 小时内的对话历史（带时间戳标注）
+
+        这是系统的"短期记忆"功能，用于给 Agent 提供完整的对话上下文。
+
+        Args:
+            user_id: 用户ID
+            conversation_id: 当前对话ID
+            hours: 时间窗口（小时），默认 72 小时（3天）
+            max_messages: 最大消息数量（来回对话数量）
+
+        Returns:
+            带时间戳的消息列表，格式：
+            [
+                {"role": "user", "content": "...", "timestamp": "[22:30]"},
+                {"role": "assistant", "content": "...", "timestamp": "[22:31]"},
+                ...
+            ]
+        """
+        db = self.get_session()
+        try:
+            # 计算时间边界
+            since = datetime.utcnow() - timedelta(hours=hours)
+
+            # 获取当前对话
+            current_conv = db.query(Conversation).filter(
+                Conversation.id == conversation_id
+            ).first()
+
+            if not current_conv:
+                return []
+
+            # 获取当前对话的消息
+            messages = db.query(Message).filter(
+                and_(
+                    Message.conversation_id == conversation_id,
+                    Message.created_at >= since
+                )
+            ).order_by(Message.created_at).all()
+
+            # 获取用户的其他对话（补充上下文）
+            other_conv_messages = db.query(Message).join(
+                Conversation, Message.conversation_id == Conversation.id
+            ).filter(
+                and_(
+                    Conversation.user_id == user_id,
+                    Conversation.id != conversation_id,
+                    Message.created_at >= since
+                )
+            ).order_by(Message.created_at).all()
+
+            # 合并并按时间排序
+            all_messages = messages + other_conv_messages
+            all_messages.sort(key=lambda m: m.created_at)
+
+            # 只取最近的 max_messages 条消息（来回对话）
+            all_messages = all_messages[-max_messages:]
+
+            # 转换为带时间戳的格式
+            result = []
+            for msg in all_messages:
+                timestamp = msg.created_at.strftime("%H:%M")
+                result.append({
+                    "role": msg.role,
+                    "content": msg.content,
+                    "timestamp": f"[{timestamp}]"
+                })
+
+            return result
+
+        finally:
+            db.close()
+
 
 # 全局对话服务实例
 conversation_service = ConversationService()

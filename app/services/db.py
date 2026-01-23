@@ -332,11 +332,28 @@ class DatabaseService:
         with self.get_session() as session:
             # Generate ID before creating model
             event_data["id"] = str(uuid.uuid4())
-            event = EventModel(**event_data)
+
+            # Filter out fields that don't exist in the database model
+            # These fields are in the Pydantic Event model but not yet in the database table
+            unsupported_fields = {
+                "duration_source", "duration_confidence", "duration_actual",
+                "ai_original_estimate", "display_mode", "energy_consumption",
+                "ai_description", "extracted_points"
+            }
+            filtered_data = {k: v for k, v in event_data.items() if k not in unsupported_fields}
+
+            event = EventModel(**filtered_data)
             session.add(event)
             session.commit()
             session.refresh(event)
-            return event.to_dict()
+
+            # Merge with the original data (including unsupported fields) for return
+            result = event.to_dict()
+            for key in unsupported_fields:
+                if key in event_data:
+                    result[key] = event_data[key]
+
+            return result
 
     async def get_events(
         self,

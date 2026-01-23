@@ -9,7 +9,7 @@ import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.agents.daily_diary_generator import daily_diary_generator
+from app.agents.observer import observer_agent
 from app.services.profile_refinement_service import profile_refinement_service
 from app.services.diary_service import diary_service
 
@@ -97,7 +97,7 @@ class BackgroundTaskScheduler:
 
             for user_id in user_ids:
                 try:
-                    result = await daily_diary_generator.generate_daily_diary(
+                    result = await observer_agent.generate_daily_diary(
                         user_id=user_id,
                         target_date=target_date
                     )

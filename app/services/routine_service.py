@@ -428,11 +428,44 @@ class RoutineService:
         Returns:
             事件列表，每个事件包含 is_routine 标记
         """
-        # 使用原生 SQL 查询普通事件（避免 SQLAlchemy 模型冲突）
+        from sqlalchemy import text
         db = self.get_session()
         try:
-            # 1. 获取普通事件（暂时跳过，避免表结构问题）
+            # 1. 获取普通事件（使用原生 SQL）
+            start_datetime = f"{start_date}T00:00:00"
+            end_datetime = f"{end_date}T23:59:59"
+
+            query = text("""
+                SELECT id, user_id, title, description, start_time, end_time,
+                       duration, category, status, location, tags
+                FROM events
+                WHERE user_id = :user_id
+                  AND start_time >= :start_time
+                  AND start_time <= :end_time
+                  AND status != 'cancelled'
+                ORDER BY start_time
+            """)
+
+            result = db.execute(query, {
+                "user_id": user_id,
+                "start_time": start_datetime,
+                "end_time": end_datetime
+            })
+
             normal_events_data = []
+            for row in result:
+                normal_events_data.append({
+                    "id": row[0],
+                    "title": row[2],
+                    "description": row[3],
+                    "start_time": row[4],
+                    "end_time": row[5],
+                    "duration": row[6],
+                    "category": row[7],
+                    "status": row[8],
+                    "location": row[9],
+                    "tags": row[10] if row[10] else []
+                })
 
             # 2. 获取所有激活的 Routine 模板
             templates = db.query(RoutineTemplate).filter(

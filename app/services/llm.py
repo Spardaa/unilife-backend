@@ -5,7 +5,21 @@ LLM Service - Integration with DeepSeek API (OpenAI Compatible)
 from typing import List, Dict, Any, Optional
 import httpx
 import asyncio
+import time
+import logging
 from app.config import settings
+
+# 确保 httpx 异常类型可用
+# httpx.ConnectError, RemoteProtocolError, ReadTimeout, WriteTimeout, NetworkError, HTTPStatusError
+
+# 获取日志记录器
+_retry_logger = None
+
+def get_retry_logger():
+    global _retry_logger
+    if _retry_logger is None:
+        _retry_logger = logging.getLogger("llm.retry")
+    return _retry_logger
 
 
 class LLMService:
@@ -33,6 +47,17 @@ class LLMService:
             verify=True  # SSL 证书验证
         )
 
+        # 导入日志记录器（延迟导入，避免循环依赖）
+        self._llm_logger = None
+
+    @property
+    def llm_logger(self):
+        """延迟导入日志记录器"""
+        if self._llm_logger is None:
+            from app.utils.logger import llm_logger
+            self._llm_logger = llm_logger
+        return self._llm_logger
+
     async def _make_request_with_retry(
         self,
         endpoint: str,
@@ -49,46 +74,114 @@ class LLMService:
             响应数据
         """
         last_error = None
+        retry_logger = get_retry_logger()
 
         for attempt in range(self.max_retries):
             try:
-                print(f"[LLM] Attempt {attempt + 1}/{self.max_retries}: {endpoint}")
+                self.llm_logger.log_request(
+                    endpoint=endpoint,
+                    messages=payload.get("messages", []),
+                    temperature=payload.get("temperature", 0.7),
+                    tools=payload.get("tools"),
+                    max_tokens=payload.get("max_tokens")
+                )
 
+                start_time = time.time()
                 response = await self.client.post(endpoint, json=payload)
+                duration = time.time() - start_time
+
                 response.raise_for_status()
 
                 data = response.json()
-                print(f"[LLM] Success: {endpoint}")
+
+                self.llm_logger.log_response(
+                    request_id=self.llm_logger.request_count,
+                    response={
+                        "content": data.get("choices", [{}])[0].get("message", {}).get("content"),
+                        "tool_calls": data.get("choices", [{}])[0].get("message", {}).get("tool_calls"),
+                        "usage": data.get("usage", {}),
+                    },
+                    duration=duration,
+                    success=True
+                )
+
                 return data
 
             except httpx.ConnectError as e:
                 last_error = e
-                print(f"[LLM] Connection error (attempt {attempt + 1}): {e}")
-
                 if attempt < self.max_retries - 1:
-                    delay = self.retry_delay * (2 ** attempt)  # 指数退避
-                    print(f"[LLM] Retrying in {delay} seconds...")
+                    delay = self.retry_delay * (2 ** attempt)
+                    retry_logger.warning(f"连接错误，{delay}秒后重试 ({attempt + 1}/{self.max_retries})...")
                     await asyncio.sleep(delay)
                 else:
-                    print(f"[LLM] All retry attempts failed for {endpoint}")
+                    self.llm_logger.log_error(self.llm_logger.request_count, e)
+                    raise Exception(f"Connection failed after {self.max_retries} attempts: {e}")
+
+            except httpx.RemoteProtocolError as e:
+                # 服务器断开连接（可能是临时网络问题）
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)
+                    retry_logger.warning(f"服务器断开连接，{delay}秒后重试 ({attempt + 1}/{self.max_retries})...")
+                    await asyncio.sleep(delay)
+                else:
+                    self.llm_logger.log_error(self.llm_logger.request_count, e)
+                    raise Exception(f"Server disconnected after {self.max_retries} attempts: {e}")
+
+            except httpx.ReadTimeout as e:
+                # 读取超时
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)
+                    retry_logger.warning(f"读取超时，{delay}秒后重试 ({attempt + 1}/{self.max_retries})...")
+                    await asyncio.sleep(delay)
+                else:
+                    self.llm_logger.log_error(self.llm_logger.request_count, e)
+                    raise Exception(f"Read timeout after {self.max_retries} attempts: {e}")
+
+            except httpx.WriteTimeout as e:
+                # 写入超时
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)
+                    retry_logger.warning(f"写入超时，{delay}秒后重试 ({attempt + 1}/{self.max_retries})...")
+                    await asyncio.sleep(delay)
+                else:
+                    self.llm_logger.log_error(self.llm_logger.request_count, e)
+                    raise Exception(f"Write timeout after {self.max_retries} attempts: {e}")
 
             except httpx.HTTPStatusError as e:
                 last_error = e
-                print(f"[LLM] HTTP error {e.response.status_code}: {e.response.text}")
 
                 # 4xx 错误不重试
                 if 400 <= e.response.status_code < 500:
-                    break
+                    self.llm_logger.log_error(self.llm_logger.request_count, e)
+                    raise
 
+                # 5xx 错误重试
                 if attempt < self.max_retries - 1:
                     delay = self.retry_delay * (2 ** attempt)
-                    print(f"[LLM] Retrying in {delay} seconds...")
+                    retry_logger.warning(f"服务器错误 {e.response.status_code}，{delay}秒后重试 ({attempt + 1}/{self.max_retries})...")
                     await asyncio.sleep(delay)
+                else:
+                    self.llm_logger.log_error(self.llm_logger.request_count, e)
+                    raise Exception(f"HTTP {e.response.status_code} after {self.max_retries} attempts: {e}")
+
+            except httpx.NetworkError as e:
+                # 其他网络错误
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)
+                    retry_logger.warning(f"网络错误，{delay}秒后重试 ({attempt + 1}/{self.max_retries})...")
+                    await asyncio.sleep(delay)
+                else:
+                    self.llm_logger.log_error(self.llm_logger.request_count, e)
+                    raise Exception(f"Network error after {self.max_retries} attempts: {e}")
 
             except Exception as e:
                 last_error = e
-                print(f"[LLM] Unexpected error (attempt {attempt + 1}): {e}")
-                break
+                self.llm_logger.log_error(self.llm_logger.request_count, e)
+                raise
 
         # 所有重试都失败
         raise Exception(f"Failed to connect to LLM API after {self.max_retries} attempts. Last error: {last_error}")

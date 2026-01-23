@@ -8,15 +8,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.api import chat, events, users, snapshots, stats, diaries
 from app.scheduler.background_tasks import task_scheduler
+from app.utils.logger import init_logging, LogColors
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
+    # 初始化日志系统
+    init_logging()
+
+    import logging
+    logger = logging.getLogger("main")
+
     # Startup
-    print(f"🚀 UniLife Backend starting...")
-    print(f"🔧 Debug mode: {settings.debug}")
-    print(f"🌐 API listening on http://{settings.api_host}:{settings.api_port}")
+    logger.info(f"{LogColors.bold('🚀 UniLife Backend starting...')}")
+    logger.info(f"🔧 Debug mode: {settings.debug}")
+    logger.info(f"🌐 API listening on http://{settings.api_host}:{settings.api_port}")
 
     # Start background task scheduler
     task_scheduler.start()
@@ -24,7 +31,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    print("🛑 UniLife Backend shutting down...")
+    logger.info("🛑 UniLife Backend shutting down...")
     # Stop background task scheduler
     task_scheduler.stop()
 
