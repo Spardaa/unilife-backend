@@ -23,7 +23,8 @@
       "Bash(scutil:*)",
       "Bash(ping:*)",
       "Bash(env)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(git push:*)"
     ]
   }
 }
