@@ -43,10 +43,18 @@ class EventStatus(str, Enum):
 
 # ==================== New Models for Enhanced Features ====================
 
+class TimePeriod(str, Enum):
+    """Time period for events without specific start time"""
+    ANYTIME = "ANYTIME"
+    MORNING = "MORNING"
+    AFTERNOON = "AFTERNOON"
+    NIGHT = "NIGHT"
+
+
 class EnergyDimension(BaseModel):
     """Single dimension of energy consumption"""
     level: str = Field(..., description="Energy level: low, medium, high")
-    score: int = Field(..., ge=0, le=10, description="Energy score 0-10")
+    score: int = Field(..., ge=0, le=100, description="Energy score 0-100 (60 = 30min high intensity task)")
     description: str = Field(..., description="Natural language description")
     factors: List[str] = Field(default_factory=list, description="Specific factors contributing to energy consumption")
 
@@ -54,8 +62,8 @@ class EnergyDimension(BaseModel):
         json_schema_extra = {
             "example": {
                 "level": "high",
-                "score": 8,
-                "description": "需要连续站立3小时，涉及搬运物品",
+                "score": 75,
+                "description": "需要连续站立3小时，涉及搬运物品 (30分钟高强度)",
                 "factors": ["站立", "搬运", "移动"]
             }
         }
@@ -73,18 +81,36 @@ class EnergyConsumption(BaseModel):
             "example": {
                 "physical": {
                     "level": "high",
-                    "score": 8,
-                    "description": "需要上下楼梯搬运重物",
+                    "score": 75,
+                    "description": "需要上下楼梯搬运重物 (30分钟高强度)",
                     "factors": ["爬楼梯", "搬运重物"]
                 },
                 "mental": {
                     "level": "low",
-                    "score": 3,
+                    "score": 30,
                     "description": "简单的体力劳动",
                     "factors": ["机械操作"]
                 },
                 "evaluated_at": "2026-01-21T10:00:00",
                 "evaluated_by": "energy_evaluator_agent"
+            }
+        }
+
+
+class RepeatPattern(BaseModel):
+    """Repeat pattern for recurring events"""
+    type: str = Field(..., description="daily/weekly/monthly/custom")
+    weekdays: Optional[List[int]] = Field(None, description="Days of week (0=Sunday, 6=Saturday) for custom type")
+    time: Optional[str] = Field(None, description="Time in HH:MM format (optional)")
+    end_date: Optional[str] = Field(None, description="End date in YYYY-MM-DD format (optional)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "type": "weekly",
+                "weekdays": [1, 2, 3, 4, 5],
+                "time": "18:00",
+                "end_date": "2026-12-31"
             }
         }
 
@@ -127,9 +153,11 @@ class Event(BaseModel):
     # Basic information
     title: str = Field(..., description="Event title")
     description: Optional[str] = Field(None, description="Detailed description")
+    notes: Optional[str] = Field(None, description="Additional notes for the event")
 
     # Time information (all optional to support different event types)
-    start_time: Optional[datetime] = Field(None, description="Start time")
+    time_period: Optional[TimePeriod] = Field(None, description="Time period (ANYTIME/MORNING/AFTERNOON/NIGHT) - primary field for time-based events")
+    start_time: Optional[datetime] = Field(None, description="Start time - optional, only set when user specifies exact time")
     end_time: Optional[datetime] = Field(None, description="End time or deadline")
     duration: Optional[int] = Field(None, description="Duration in minutes")
 
@@ -161,7 +189,8 @@ class Event(BaseModel):
     )
 
     # Scheduling attributes
-    energy_required: EnergyLevel = Field(default=EnergyLevel.MEDIUM, description="Required energy level")
+    # energy_required: DEPRECATED - Use energy_consumption instead
+    energy_required: Optional[EnergyLevel] = Field(None, deprecated="Use energy_consumption.physical/mental.score instead")
     urgency: int = Field(default=3, ge=1, le=5, description="Urgency level 1-5")
     importance: int = Field(default=3, ge=1, le=5, description="Importance level 1-5")
     is_deep_work: bool = Field(default=False, description="Whether this is deep work")
@@ -170,6 +199,10 @@ class Event(BaseModel):
     event_type: EventType = Field(default=EventType.FLOATING, description="Event type")
     category: Category = Field(default=Category.WORK, description="Event category")
     tags: List[str] = Field(default_factory=list, description="Custom tags")
+
+    # Repeat pattern
+    repeat_pattern: Optional[RepeatPattern] = Field(None, description="Repeat pattern for recurring events")
+    routine_batch_id: Optional[str] = Field(None, description="Batch ID for AI-created recurring event instances")
 
     # Location and participants
     location: Optional[str] = Field(None, description="Event location")
@@ -208,10 +241,11 @@ class Event(BaseModel):
                 "user_id": "user-123",
                 "title": "团队周会",
                 "description": "讨论本周项目进度",
-                "start_time": "2026-01-21T14:00:00",
-                "end_time": "2026-01-21T15:00:00",
+                "notes": "带笔记本",
+                "time_period": "AFTERNOON",
+                "start_time": None,
+                "end_time": None,
                 "duration": 60,
-                "energy_required": "MEDIUM",
                 "urgency": 4,
                 "importance": 4,
                 "is_deep_work": False,
@@ -221,11 +255,20 @@ class Event(BaseModel):
                 "location": "会议室A",
                 "participants": ["user-123", "user-456"],
                 "status": "PENDING",
+                "repeat_pattern": {
+                    "type": "weekly",
+                    "weekdays": [1, 2, 3, 4, 5],
+                    "time": "14:00"
+                },
                 "created_at": "2026-01-20T10:00:00",
                 "updated_at": "2026-01-20T10:00:00",
                 "created_by": "user",
                 "ai_confidence": 0.8,
-                "ai_reasoning": "Scheduled based on user preference for Tuesday afternoons"
+                "ai_reasoning": "Scheduled based on user preference for Tuesday afternoons",
+                "energy_consumption": {
+                    "physical": {"level": "low", "score": 20, "description": "Sedentary meeting", "factors": ["sitting"]},
+                    "mental": {"level": "high", "score": 70, "description": "Active discussion and planning", "factors": ["focus", "communication"]}
+                }
             }
         }
 

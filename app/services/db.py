@@ -104,9 +104,15 @@ class EventModel(Base):
     # Basic information
     title = Column(String, nullable=False)
     description = Column(String, nullable=True)
+    notes = Column(String, nullable=True)  # Additional notes for the event
 
-    # Time information (all optional to support different event types)
-    start_time = Column(DateTime, nullable=True)
+    # Time information - time_period is primary, start_time is optional
+    # event_date: the date this event belongs to (independent of start_time)
+    # - For floating events: set to user-selected date
+    # - For scheduled events: can be derived from start_time, but can also be set separately
+    event_date = Column(DateTime, nullable=True)  # Event's assigned date
+    time_period = Column(String, nullable=True)  # ANYTIME/MORNING/AFTERNOON/NIGHT
+    start_time = Column(DateTime, nullable=True)  # Specific time (if user sets exact time)
     end_time = Column(DateTime, nullable=True)
     duration = Column(Integer, nullable=True)
 
@@ -142,12 +148,21 @@ class EventModel(Base):
     ai_reasoning = Column(String, nullable=True)
 
     # Routine/Habit specific fields (for long-term recurring events)
-    repeat_rule = Column(JSON, nullable=True)  # {"frequency": "weekly", "days": [1,2,3,4,5], "end_date": "2026-06-30"}
+    repeat_rule = Column(JSON, nullable=True)  # DEPRECATED - Use repeat_pattern instead
+    repeat_pattern = Column(JSON, nullable=True)  # {"type": "weekly", "weekdays": [1,2,3,4,5], "time": "18:00", "end_date": "2026-06-30"}
+    routine_batch_id = Column(String, nullable=True)  # Batch ID for AI-created recurring event instances
     is_flexible = Column(Boolean, default=False)  # Whether time is flexible (decide each day)
     preferred_time_slots = Column(JSON, nullable=True)  # Preferred time slots: [{"start": "18:00", "end": "20:00", "priority": 1}]
     makeup_strategy = Column(String, nullable=True)  # Strategy when missed: "ask_user", "auto_next_day", "auto_same_day_next_week"
     parent_routine_id = Column(String, nullable=True)  # For routine instances: which routine they belong to
     routine_completed_dates = Column(JSON, nullable=True)  # Track which dates the routine was completed: ["2026-01-20", "2026-01-21"]
+
+    # Energy consumption (new system)
+    energy_consumption = Column(JSON, nullable=True)  # {"physical": {...}, "mental": {...}, "evaluated_at": "...", "evaluated_by": "..."}
+
+    # User-set effort indicators (for user input)
+    is_physically_demanding = Column(Boolean, default=False)  # User-set indicator
+    is_mentally_demanding = Column(Boolean, default=False)  # User-set indicator
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -156,10 +171,13 @@ class EventModel(Base):
             "user_id": self.user_id,
             "title": self.title,
             "description": self.description,
+            "notes": self.notes,
+            "event_date": self.event_date.isoformat() if self.event_date else None,
+            "time_period": self.time_period,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "end_time": self.end_time.isoformat() if self.end_time else None,
             "duration": self.duration,
-            "energy_required": self.energy_required,
+            "energy_required": self.energy_required,  # DEPRECATED
             "urgency": self.urgency,
             "importance": self.importance,
             "is_deep_work": self.is_deep_work,
@@ -177,12 +195,18 @@ class EventModel(Base):
             "ai_confidence": float(self.ai_confidence) if self.ai_confidence else 0.5,
             "ai_reasoning": self.ai_reasoning,
             # Routine fields
-            "repeat_rule": self.repeat_rule,
+            "repeat_rule": self.repeat_rule,  # DEPRECATED
+            "repeat_pattern": self.repeat_pattern,
+            "routine_batch_id": self.routine_batch_id,
             "is_flexible": self.is_flexible,
             "preferred_time_slots": self.preferred_time_slots,
             "makeup_strategy": self.makeup_strategy,
             "parent_routine_id": self.parent_routine_id,
             "routine_completed_dates": self.routine_completed_dates or [],
+            # Energy consumption
+            "energy_consumption": self.energy_consumption,
+            "is_physically_demanding": self.is_physically_demanding,
+            "is_mentally_demanding": self.is_mentally_demanding,
         }
 
 
@@ -337,13 +361,42 @@ class DatabaseService:
         self._ensure_initialized()
         with self.get_session() as session:
             # Generate ID before creating model
+            event_data = event_data.copy()
             event_data["id"] = str(uuid.uuid4())
+
+            # Convert enums and datetime objects to strings for database storage
+            if "time_period" in event_data and event_data["time_period"] is not None:
+                if hasattr(event_data["time_period"], "value"):
+                    event_data["time_period"] = event_data["time_period"].value
+                else:
+                    event_data["time_period"] = str(event_data["time_period"])
+
+            # Keep event_date as datetime object for SQLAlchemy
+            # Do NOT convert to string - SQLAlchemy DateTime columns need datetime objects
+            if "event_date" in event_data and event_data["event_date"] is not None:
+                if isinstance(event_data["event_date"], str):
+                    # Parse ISO format string to datetime
+                    from datetime import datetime
+                    event_data["event_date"] = datetime.fromisoformat(event_data["event_date"].replace('Z', '+00:00'))
+
+            # Convert datetime objects to ISO format strings in energy_consumption
+            if "energy_consumption" in event_data and event_data["energy_consumption"] is not None:
+                ec = event_data["energy_consumption"]
+                if isinstance(ec, dict):
+                    if "evaluated_at" in ec and ec["evaluated_at"] is not None:
+                        if hasattr(ec["evaluated_at"], "isoformat"):
+                            ec["evaluated_at"] = ec["evaluated_at"].isoformat()
+                        else:
+                            ec["evaluated_at"] = str(ec["evaluated_at"])
+
+            # Debug: Print event_date
+            print(f"📝 DB: Creating event with event_date: {event_data.get('event_date')}")
 
             # Filter out fields that don't exist in the database model
             # These fields are in the Pydantic Event model but not yet in the database table
             unsupported_fields = {
                 "duration_source", "duration_confidence", "duration_actual",
-                "ai_original_estimate", "display_mode", "energy_consumption",
+                "ai_original_estimate", "display_mode",
                 "ai_description", "extracted_points"
             }
             filtered_data = {k: v for k, v in event_data.items() if k not in unsupported_fields}
@@ -365,20 +418,45 @@ class DatabaseService:
         self,
         user_id: str,
         filters: Optional[Dict[str, Any]] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
         limit: int = 100
     ) -> List[Dict[str, Any]]:
-        """Get events for a user"""
+        """Get events for a user with optional date range filter"""
         self._ensure_initialized()
         with self.get_session() as session:
             query = session.query(EventModel).filter(EventModel.user_id == user_id)
 
-            # Apply filters
+            # Apply date range filter (for events with start_time)
+            if start_date:
+                # Include events with start_time >= start_date OR events without start_time (time_period events)
+                from sqlalchemy import or_
+                query = query.filter(
+                    or_(
+                        EventModel.start_time >= start_date,
+                        EventModel.start_time.is_(None)
+                    )
+                )
+            if end_date:
+                query = query.filter(
+                    or_(
+                        EventModel.start_time <= end_date,
+                        EventModel.start_time.is_(None)
+                    )
+                )
+
+            # Apply other filters
             if filters:
                 for key, value in filters.items():
                     if hasattr(EventModel, key):
                         query = query.filter(getattr(EventModel, key) == value)
 
-            results = query.order_by(EventModel.start_time).limit(limit).all()
+            # Order by time_period first (NULLS LAST), then start_time
+            from sqlalchemy import nullslast
+            results = query.order_by(
+                nullslast(EventModel.time_period),
+                nullslast(EventModel.start_time)
+            ).limit(limit).all()
             return [event.to_dict() for event in results]
 
     async def get_event(self, event_id: str, user_id: str) -> Optional[Dict[str, Any]]:

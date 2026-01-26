@@ -2,7 +2,7 @@
 Observer Trigger Tracker - 追踪待分析的对话
 实现 30min 延迟触发和 15 条消息阈值触发
 """
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 import asyncio

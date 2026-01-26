@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 
 from app.schemas.events import (
     EventCreate, EventResponse, EventUpdate, EventStatus,
-    EventType, Category
+    EventType, Category, TimePeriod
 )
 from app.services.db import db_service
 from app.middleware.auth import get_current_user
@@ -23,6 +23,7 @@ async def get_events(
     status: Optional[EventStatus] = Query(None, description="Filter by status"),
     event_type: Optional[EventType] = Query(None, description="Filter by event type"),
     category: Optional[Category] = Query(None, description="Filter by category"),
+    time_period: Optional[TimePeriod] = Query(None, description="Filter by time period (ANYTIME/MORNING/AFTERNOON/NIGHT)"),
     limit: int = Query(100, ge=1, le=500, description="Maximum number of events to return")
 ):
     """
@@ -33,6 +34,7 @@ async def get_events(
     - Status (PENDING, IN_PROGRESS, COMPLETED, CANCELLED)
     - Event type (schedule, deadline, floating, habit, reminder)
     - Category (STUDY, WORK, SOCIAL, LIFE, HEALTH)
+    - Time period (ANYTIME, MORNING, AFTERNOON, NIGHT)
     """
     filters = {}
     if status:
@@ -41,6 +43,8 @@ async def get_events(
         filters["event_type"] = event_type.value
     if category:
         filters["category"] = category.value
+    if time_period:
+        filters["time_period"] = time_period.value
 
     events = await db_service.get_events(
         user_id=user_id,
@@ -106,18 +110,16 @@ async def create_event(
     event_data["created_by"] = "user"
     event_data["ai_confidence"] = 1.0
 
-    # Check for time conflicts if both start_time and end_time are provided
-    if event_data.get("start_time") and event_data.get("end_time"):
-        conflicts = await db_service.check_time_conflict(
-            user_id=user_id,
-            start_time=event_data["start_time"],
-            end_time=event_data["end_time"],
-            exclude_event_id=None
-        )
-        if conflicts:
-            # Return conflict information in headers
-            conflict_ids = [c["id"] for c in conflicts]
-            pass  # We still create the event, but client can check headers
+    # Debug: Print received event_date
+    print(f"📝 API: Received event_date: {event_data.get('event_date')}")
+
+    # Auto-derive event_date from start_time if not provided
+    if event_data.get("event_date") is None and event_data.get("start_time") is not None:
+        start_time = event_data["start_time"]
+        # Extract date part (start of day) from start_time
+        from datetime import datetime, time
+        event_data["event_date"] = datetime.combine(start_time.date(), time.min)
+        print(f"📝 API: Derived event_date from start_time: {event_data['event_date']}")
 
     result = await db_service.create_event(event_data)
     return EventResponse(**result)

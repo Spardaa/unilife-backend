@@ -2,7 +2,7 @@
 Persona Agent - 陪伴者
 负责拟人化回复，无工具调用能力
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 import json
 
