@@ -11,7 +11,7 @@ class ContactInfo(BaseModel):
     """Contact information"""
     name: str
     user_id: Optional[str] = None
-    wechat_id: Optional[str] = None
+    contact_user_id: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
 
@@ -63,7 +63,7 @@ class UserMemory(BaseModel):
                 },
                 "social_profile": {
                     "contacts": {
-                        "friend-1": {"name": "张三", "wechat_id": "wx_123"}
+                        "friend-1": {"name": "张三", "contact_user_id": "user_123"}
                     },
                     "relationships": {"friend-1": "friend"},
                     "intimacy_scores": {"friend-1": 0.8}

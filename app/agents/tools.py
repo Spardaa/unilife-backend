@@ -1541,13 +1541,16 @@ async def tool_create_routine_template(
     is_flexible: bool = True
 ) -> Dict[str, Any]:
     """
-    创建 Routine 模板（支持序列循环）
+    创建长期日程（Routine）- 统一创建接口
+
+    支持序列循环，同时写入 routine_templates 表（新架构）和 events 表（兼容旧查询）。
 
     示例：
     - "每周一到五健身，训练顺序是胸肩背循环"
       → frequency="weekly", days=[0,1,2,3,4], sequence=["胸", "肩", "背"]
     """
     from app.services.routine_service import routine_service
+    from app.services.db import db_service
 
     # 构建重复规则
     repeat_rule = {"frequency": frequency}
@@ -1556,7 +1559,7 @@ async def tool_create_routine_template(
     if time:
         repeat_rule["time"] = time
 
-    # 创建模板
+    # 1. 创建 routine_templates 表记录（新架构）
     template = routine_service.create_template(
         user_id=user_id,
         name=name,
@@ -1565,6 +1568,28 @@ async def tool_create_routine_template(
         repeat_rule=repeat_rule,
         sequence=sequence,
         is_flexible=is_flexible
+    )
+
+    # 2. 同时在 events 表中创建 HABIT 记录（兼容旧查询）
+    await db_service.create_routine(
+        user_id=user_id,
+        title=name,
+        description=description,
+        repeat_rule=repeat_rule,
+        is_flexible=is_flexible,
+        category=category or "LIFE",
+        parent_routine_id=template.id  # 关联到新模板
+    )
+
+    # 3. 预生成未来 30 天的实例
+    from datetime import datetime, timedelta
+    end_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
+    start_date = datetime.now().strftime("%Y-%m-%d")
+
+    instances = routine_service.generate_instances(
+        template_id=template.id,
+        start_date=start_date,
+        end_date=end_date
     )
 
     result = template.to_dict()
@@ -1578,7 +1603,8 @@ async def tool_create_routine_template(
     return {
         "success": True,
         "template": result,
-        "message": f"[ROUTINE] 已创建长期日程：{name}" + (f"，序列：{' → '.join(sequence)}" if sequence else "")
+        "instances_generated": len(instances),
+        "message": f"[ROUTINE] 已创建长期日程：{name}" + (f"，序列：{' → '.join(sequence)}" if sequence else "") + f"，已生成未来30天的{len(instances)}个实例"
     }
 
 

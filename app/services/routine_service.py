@@ -5,7 +5,7 @@ Routine Service - 长期重复日程服务
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from sqlalchemy import create_engine, desc, and_, or_, text
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, joinedload
 from sqlalchemy.pool import StaticPool
 from dateutil.parser import parse
 from dateutil.rrule import rrule, rruleset, rrulestr
@@ -293,6 +293,66 @@ class RoutineService:
 
         return dates
 
+    def _generate_habit_instances(
+        self,
+        habit_event: Any,
+        start_date: str,
+        end_date: str
+    ) -> List[Dict[str, Any]]:
+        """
+        从 events 表的 HABIT 记录生成指定日期范围的实例
+
+        Args:
+            habit_event: events 表中的 HABIT 类型记录
+            start_date: 查询开始日期 (YYYY-MM-DD)
+            end_date: 查询结束日期 (YYYY-MM-DD)
+
+        Returns:
+            实例列表（字典格式，与 RoutineInstance.to_event_format() 兼容）
+        """
+        repeat_rule = habit_event.repeat_rule
+        if not repeat_rule:
+            return []
+
+        # 计算日期范围
+        dates = self._calculate_repeat_dates(
+            repeat_rule=repeat_rule,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        instances = []
+        for date in dates:
+            date_str = date.strftime("%Y-%m-%d")
+
+            # 检查是否已完成（从 routine_completed_dates 字段）
+            completed_dates = habit_event.routine_completed_dates or []
+            if date_str in completed_dates:
+                status = "completed"
+            else:
+                status = "pending"
+
+            # 获取时间（如果有）
+            time_str = None
+            if isinstance(repeat_rule, dict):
+                time_str = repeat_rule.get("time")
+
+            # 构建实例（兼容 to_event_format() 格式的字典）
+            instance = {
+                "id": f"{habit_event.id}_{date_str}",  # 生成虚拟实例ID
+                "template_id": habit_event.id,
+                "scheduled_date": date_str,
+                "scheduled_time": time_str,
+                "title": habit_event.title,
+                "description": habit_event.description,
+                "status": status,
+                "is_routine": True,
+                "source": "events_table"  # 标记来源
+            }
+            instances.append(instance)
+
+        return instances
+
     def get_instances(
         self,
         template_id: Optional[str] = None,
@@ -319,13 +379,23 @@ class RoutineService:
         finally:
             db.close()
 
-    def get_instance(self, instance_id: str) -> Optional[RoutineInstance]:
-        """获取单个实例"""
+    def get_instance(self, instance_id: str, load_template: bool = True) -> Optional[RoutineInstance]:
+        """
+        获取单个实例
+
+        Args:
+            instance_id: 实例ID
+            load_template: 是否预加载 template 关联（默认 True，避免 session 关闭后无法访问）
+        """
         db = self.get_session()
         try:
-            return db.query(RoutineInstance).filter(
+            query = db.query(RoutineInstance).filter(
                 RoutineInstance.id == instance_id
-            ).first()
+            )
+            # 预加载 template 关联，避免 session 关闭后 lazy load 失败
+            if load_template:
+                query = query.options(joinedload(RoutineInstance.template))
+            return query.first()
         finally:
             db.close()
 
@@ -420,6 +490,11 @@ class RoutineService:
 
         这是主要查询接口，返回统一格式的事件列表
 
+        支持两套数据源：
+        1. events 表中的普通事件（有 start_time）
+        2. events 表中的 HABIT 类型长期日程（event_type='HABIT', repeat_rule IS NOT NULL）
+        3. routine_templates 表中的三层架构模板
+
         Args:
             user_id: 用户ID
             start_date: 开始日期
@@ -429,6 +504,8 @@ class RoutineService:
             事件列表，每个事件包含 is_routine 标记
         """
         from sqlalchemy import text
+        # Import EventModel for querying HABIT events
+        from app.services.db import EventModel
         db = self.get_session()
         try:
             # 1. 获取普通事件（使用原生 SQL）
@@ -467,7 +544,27 @@ class RoutineService:
                     "tags": row[10] if row[10] else []
                 })
 
-            # 2. 获取所有激活的 Routine 模板
+            # 2. 【新增】查询 events 表中的 HABIT 类型（旧系统数据）
+            habit_events = db.query(EventModel).filter(
+                and_(
+                    EventModel.user_id == user_id,
+                    EventModel.event_type == "HABIT",
+                    EventModel.repeat_rule.is_not(None),
+                    EventModel.status != "cancelled"
+                )
+            ).all()
+
+            # 3. 为查询日期范围生成 habit 实例
+            routine_instances = []
+            for habit in habit_events:
+                instances = self._generate_habit_instances(
+                    habit_event=habit,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                routine_instances.extend(instances)
+
+            # 4. 获取所有激活的 Routine 模板（新系统，向后兼容）
             templates = db.query(RoutineTemplate).filter(
                 and_(
                     RoutineTemplate.user_id == user_id,
@@ -475,8 +572,7 @@ class RoutineService:
                 )
             ).all()
 
-            # 3. 为每个模板生成实例
-            routine_instances = []
+            # 5. 为每个模板生成实例
             for template in templates:
                 instances = self.generate_instances(
                     template_id=template.id,
@@ -501,8 +597,30 @@ class RoutineService:
 
             # 添加 Routine 实例
             for instance in routine_instances:
-                if instance.status != "cancelled":  # 不显示已取消的
-                    events.append(instance.to_event_format())
+                # 处理两种类型的实例：
+                # 1. RoutineInstance 对象（来自 routine_templates 表）
+                # 2. dict 字典（来自 events 表的 HABIT 类型）
+                if isinstance(instance, dict):
+                    # dict 类型实例（来自 events 表）
+                    status = instance.get("status", "pending")
+                    if status != "cancelled":  # 不显示已取消的
+                        # 将 dict 转换为 event 格式
+                        event_format = {
+                            "id": instance.get("id"),
+                            "type": "routine_instance",
+                            "template_id": instance.get("template_id"),
+                            "title": instance.get("title"),
+                            "date": instance.get("scheduled_date"),
+                            "time": instance.get("scheduled_time"),
+                            "status": status,
+                            "is_routine": True,
+                            "source": instance.get("source", "events_table")
+                        }
+                        events.append(event_format)
+                else:
+                    # RoutineInstance 对象（来自 routine_templates 表）
+                    if instance.status != "cancelled":  # 不显示已取消的
+                        events.append(instance.to_event_format())
 
             # 按日期和时间排序
             def sort_key(event):

@@ -57,7 +57,7 @@ class UserCreate(UserBase):
     """Create user model"""
     email: Optional[str] = Field(None, description="User email")
     phone: Optional[str] = Field(None, description="User phone")
-    wechat_id: Optional[str] = Field(None, description="WeChat ID")
+    user_id: Optional[str] = Field(None, description="User ID")
 
 
 class UserUpdate(BaseModel):
@@ -65,7 +65,7 @@ class UserUpdate(BaseModel):
     nickname: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
-    wechat_id: Optional[str] = None
+    user_id: Optional[str] = None
     avatar_url: Optional[str] = None
     timezone: Optional[str] = None
     preferences: Optional[UserPreferences] = None
@@ -83,7 +83,7 @@ class UserResponse(UserBase):
     id: str = Field(..., description="User ID")
     email: Optional[str] = None
     phone: Optional[str] = None
-    wechat_id: Optional[str] = None
+    user_id: Optional[str] = None
     avatar_url: Optional[str] = None
     energy_profile: EnergyProfile = Field(..., description="User energy profile")
     current_energy: int = Field(default=100, ge=0, le=100, description="Current energy value")
@@ -93,3 +93,50 @@ class UserResponse(UserBase):
 
     class Config:
         from_attributes = True
+
+
+class UserProfileResponse(BaseModel):
+    """Full user profile response (personality + decision preferences)"""
+    user_id: str = Field(..., description="User ID")
+
+    # Personality profile from UserProfile
+    relationships: Dict[str, Any] = Field(default_factory=dict, description="Relationship status")
+    identity: Dict[str, Any] = Field(default_factory=dict, description="User identity")
+    preferences: Dict[str, Any] = Field(default_factory=dict, description="Personal preferences")
+    habits: Dict[str, Any] = Field(default_factory=dict, description="User habits")
+    total_points: int = Field(default=0, description="Total data points collected")
+
+    # Decision preferences from UserDecisionProfile
+    time_preference: Dict[str, Any] = Field(default_factory=dict, description="Time preferences")
+    meeting_preference: Dict[str, Any] = Field(default_factory=dict, description="Meeting preferences")
+    energy_profile: Dict[str, Any] = Field(default_factory=dict, description="Energy profile")
+    conflict_resolution: Dict[str, Any] = Field(default_factory=dict, description="Conflict resolution strategy")
+    scenario_preferences: Dict[str, Any] = Field(default_factory=dict, description="Learned scenario preferences")
+    explicit_rules: list[str] = Field(default_factory=list, description="Explicit user rules")
+
+    updated_at: datetime = Field(..., description="Last update timestamp")
+
+
+class UserStatsResponse(BaseModel):
+    """User statistics response"""
+    user_id: str = Field(..., description="User ID")
+
+    # Event statistics
+    total_events: int = Field(default=0, description="Total number of events")
+    pending_events: int = Field(default=0, description="Pending events")
+    completed_events: int = Field(default=0, description="Completed events")
+    cancelled_events: int = Field(default=0, description="Cancelled events")
+
+    # Category breakdown
+    events_by_category: Dict[str, int] = Field(default_factory=dict, description="Events by category")
+
+    # Type breakdown
+    events_by_type: Dict[str, int] = Field(default_factory=dict, description="Events by type")
+
+    # Profile stats
+    profile_points: int = Field(default=0, description="Profile data points")
+    decision_confidence: Dict[str, float] = Field(default_factory=dict, description="Decision confidence scores")
+
+    # Activity stats
+    last_active_at: Optional[datetime] = Field(None, description="Last activity timestamp")
+    created_at: Optional[datetime] = Field(None, description="Account creation timestamp")

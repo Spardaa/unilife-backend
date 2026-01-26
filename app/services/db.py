@@ -60,7 +60,7 @@ class UserModel(Base):
     id = Column(String, primary_key=True)
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True)
-    wechat_id = Column(String, nullable=True, unique=True)
+    user_id = Column(String, nullable=True, unique=True)
     nickname = Column(String, nullable=False)
     avatar_url = Column(String, nullable=True)
     timezone = Column(String, default="Asia/Shanghai")
@@ -82,7 +82,7 @@ class UserModel(Base):
             "id": self.id,
             "email": self.email,
             "phone": self.phone,
-            "wechat_id": self.wechat_id,
+            "user_id": self.user_id,
             "nickname": self.nickname,
             "avatar_url": self.avatar_url,
             "timezone": self.timezone,
@@ -128,6 +128,10 @@ class EventModel(Base):
     # Status management
     status = Column(String, nullable=False, default=EventStatus.PENDING.value)
 
+    # Completion tracking
+    completed_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
@@ -165,6 +169,8 @@ class EventModel(Base):
             "location": self.location,
             "participants": self.participants or [],
             "status": self.status,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "created_by": self.created_by,
@@ -453,23 +459,28 @@ class DatabaseService:
             conflicts = []
 
             for event in events:
-                # Check for overlap (handle naive datetimes)
+                # Check for overlap (timezone-aware comparison)
                 event_start = event.start_time
                 event_end = event.end_time
 
-                # Strip timezone info if present for comparison
-                if event_start and hasattr(event_start, 'tzinfo') and event_start.tzinfo is not None:
-                    event_start = event_start.replace(tzinfo=None)
-                if event_end and hasattr(event_end, 'tzinfo') and event_end.tzinfo is not None:
-                    event_end = event_end.replace(tzinfo=None)
-                if start_time and hasattr(start_time, 'tzinfo') and start_time.tzinfo is not None:
-                    start_time = start_time.replace(tzinfo=None)
-                if end_time and hasattr(end_time, 'tzinfo') and end_time.tzinfo is not None:
-                    end_time = end_time.replace(tzinfo=None)
+                # Convert all times to UTC for comparison
+                def to_utc(dt):
+                    """Convert datetime to UTC, preserving timezone info if present"""
+                    if dt is None:
+                        return None
+                    if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
+                        return dt.astimezone(self._get_utc_timezone())
+                    # If naive datetime, assume it's already UTC (existing data)
+                    return dt
+
+                event_start_utc = to_utc(event_start)
+                event_end_utc = to_utc(event_end)
+                start_time_utc = to_utc(start_time)
+                end_time_utc = to_utc(end_time)
 
                 # Check for overlap
-                if start_time and end_time and event_start and event_end:
-                    if (start_time < event_end) and (end_time > event_start):
+                if start_time_utc and end_time_utc and event_start_utc and event_end_utc:
+                    if (start_time_utc < event_end_utc) and (end_time_utc > event_start_utc):
                         conflicts.append(event.to_dict())
 
             return conflicts
@@ -481,6 +492,13 @@ class DatabaseService:
         self._ensure_initialized()
         with self.get_session() as session:
             user = session.query(UserModel).filter(UserModel.id == user_id).first()
+            return user.to_dict() if user else None
+
+    async def get_user_by_user_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get user by user_id"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            user = session.query(UserModel).filter(UserModel.user_id == user_id).first()
             return user.to_dict() if user else None
 
     async def create_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:

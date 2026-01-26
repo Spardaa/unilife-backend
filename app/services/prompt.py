@@ -97,6 +97,7 @@ class PromptService:
         template_name: str,
         user_profile: Optional[Dict[str, Any]] = None,
         user_decision_profile: Optional[Dict[str, Any]] = None,
+        current_time: Optional[str] = None,
         **extra_variables
     ) -> str:
         """
@@ -105,7 +106,7 @@ class PromptService:
         常用变量：
         - {user_profile}: 用户人格画像（JSON）
         - {user_decision}: 用户决策偏好（JSON）
-        - {current_time}: 当前时间
+        - {current_time}: 当前时间（UTC 标注）
         - {personality}: 人格摘要（文本）
         - {emotional_state}: 情绪状态
         - {stress_level}: 压力水平
@@ -114,6 +115,7 @@ class PromptService:
             template_name: 模板文件名
             user_profile: 用户人格画像
             user_decision_profile: 用户决策偏好
+            current_time: 当前时间（可选，用于测试或虚拟时间）
             **extra_variables: 额外变量
 
         Returns:
@@ -133,9 +135,29 @@ class PromptService:
             variables["user_decision"] = user_decision_profile
             variables["decision_rules"] = self._extract_decision_rules(user_decision_profile)
 
-        # 添加时间
+        # 添加时间（优先使用传入的 current_time，否则使用当前时间并标注时段）
         from datetime import datetime
-        variables["current_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        if current_time:
+            variables["current_time"] = current_time
+        else:
+            now = datetime.utcnow()
+            hour = now.hour
+            # 判断时段
+            if 0 <= hour < 5:
+                period = "凌晨"
+            elif 5 <= hour < 9:
+                period = "早上"
+            elif 9 <= hour < 12:
+                period = "上午"
+            elif 12 <= hour < 14:
+                period = "中午"
+            elif 14 <= hour < 18:
+                period = "下午"
+            elif 18 <= hour < 23:
+                period = "晚上"
+            else:
+                period = "深夜"
+            variables["current_time"] = now.strftime(f"%Y-%m-%d %H:%M:%S ({period}, {hour}点)")
 
         # 添加额外变量
         variables.update(extra_variables)

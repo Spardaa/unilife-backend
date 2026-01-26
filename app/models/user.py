@@ -89,7 +89,7 @@ class ContactInfo(BaseModel):
     """Contact information for social profile"""
     name: str
     user_id: Optional[str] = None
-    wechat_id: Optional[str] = None
+    contact_user_id: Optional[str] = None
     email: Optional[str] = None
 
 
@@ -103,7 +103,7 @@ class SocialProfile(BaseModel):
         json_schema_extra = {
             "example": {
                 "contacts": {
-                    "friend-1": {"name": "张三", "wechat_id": "wx_123"}
+                    "friend-1": {"name": "张三", "contact_user_id": "user_123"}
                 },
                 "relationships": {"friend-1": "friend"},
                 "intimacy_scores": {"friend-1": 0.8}
@@ -120,7 +120,7 @@ class User(BaseModel):
     # Authentication (unified account system)
     email: Optional[str] = Field(None, description="User email")
     phone: Optional[str] = Field(None, description="User phone")
-    wechat_id: Optional[str] = Field(None, description="WeChat ID")
+    user_id: Optional[str] = Field(None, description="User ID")
 
     # Personal info
     nickname: str = Field(..., description="User nickname")
@@ -143,7 +143,7 @@ class User(BaseModel):
             "example": {
                 "id": "550e8400-e29b-41d4-a716-446655440000",
                 "email": "user@example.com",
-                "wechat_id": "wx_abc123",
+                "user_id": "user_abc123",
                 "nickname": "Alex",
                 "avatar_url": "https://example.com/avatar.jpg",
                 "timezone": "Asia/Shanghai",

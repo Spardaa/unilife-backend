@@ -78,7 +78,8 @@ class TimeParser:
             }
         """
         if reference_date is None:
-            reference_date = datetime.now()
+            from datetime import timezone
+            reference_date = datetime.now(timezone.utc)
 
         text = text.strip().lower()
 

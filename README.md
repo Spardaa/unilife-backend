@@ -28,14 +28,17 @@ unilife-backend/
 │   │   ├── database_snapshot.py  # 快照数据模型
 │   │   ├── routine.py       # 习惯/长期日程模型
 │   │   └── conversation.py  # 对话记录模型
-│   ├── agents/              # AI Agents
-│   │   ├── jarvis.py        # Jarvis Agent (LLM + Tools 架构)
-│   │   ├── scheduler.py     # 日程管理
-│   │   ├── energy.py        # 精力管理
-│   │   ├── energy_evaluator.py  # 精力消耗评估专家
-│   │   ├── smart_scheduler.py   # 智能日程调度助手
-│   │   ├── context_extractor.py # 用户画像推测专家
-│   │   └── tools.py         # 工具注册 (20个工具)
+│   ├── agents/              # AI Agents (4层编排架构)
+│   │   ├── orchestrator.py  # 主编排器
+│   │   ├── router.py        # 路由Agent (意图分类)
+│   │   ├── executor.py      # 执行Agent (工具调用)
+│   │   ├── persona.py       # 陪伴Agent (拟人化回复)
+│   │   ├── observer.py      # 观察Agent (画像学习)
+│   │   ├── base.py          # 基础接口和枚举
+│   │   ├── duration_estimator.py   # 时长估算专家
+│   │   ├── energy_evaluator.py     # 精力消耗评估专家
+│   │   ├── smart_scheduler.py      # 智能日程调度助手
+│   │   └── tools.py         # 工具注册表 (26个工具)
 │   ├── services/            # 业务服务
 │   │   ├── db.py            # 数据库服务 (SQLAlchemy)
 │   │   ├── llm.py           # LLM 服务 (DeepSeek + 重试机制)
@@ -51,8 +54,12 @@ unilife-backend/
 │   │   └── stats.py         # 统计数据
 │   ├── schemas/             # Pydantic 请求/响应模型
 │   └── utils/               # 工具函数
-├── prompts/                 # AI 提示词
-│   └── jarvis_system.txt    # Jarvis 系统提示词
+├── prompts/                 # AI 提示词模板
+│   └── agents/              # 各Agent的提示词文件
+│       ├── router.txt       # Router 意图分类
+│       ├── executor.txt     # Executor 执行逻辑
+│       ├── persona.txt      # Persona 拟人化回复
+│       └── observer.txt     # Observer 行为分析
 ├── tests/                   # 测试
 ├── docs/                    # 文档
 ├── client.py                # 终端客户端
@@ -328,96 +335,72 @@ POST /api/v1/chat
 
 ## AI Agent 架构
 
-### Jarvis Agent (核心智能体)
+### 4层多智能体编排系统
 
-采用 **LLM + Tools** 架构（类似 Cursor Agent），不再使用意图路由器。
+采用 **AgentOrchestrator** 协调四个专业化 Agent，实现人格与逻辑分离、动态上下文注入和自我进化闭环。
 
-**核心特性：**
-- 使用 DeepSeek API 进行自然语言理解和推理
-- 通过函数调用（Function Calling）访问 20 个工具
-- 自动进行多步推理和工具链式调用
-- 最多 30 次迭代，支持复杂任务规划
+```
+用户消息 → Orchestrator
+                    ↓
+        ┌───────────┼───────────┐
+        ↓           ↓           ↓
+    Router     Executor     Persona
+   (意图)     (工具)       (共情)
+        │           │           │
+        └───────────┼───────────┘
+                    ↓
+            Response (同步)
+                    ↓
+            Observer (异步)
+                    ↓
+        更新用户画像
+```
 
-**工具分类（20个工具）：**
+#### 1. RouterAgent - 路由调度官
+- **功能**：意图分类和路由决策
+- **输出**：`EXECUTOR` / `PERSONA` / `BOTH`
+- **特点**：智能上下文过滤，减少 40-60% token 使用
 
-1. **事件管理（6个）**
-   - create_event, query_events, delete_event
-   - update_event, complete_event, check_time_conflicts
+#### 2. ExecutorAgent - 执行官
+- **功能**：理性工具执行，无情感
+- **注入**：用户决策偏好（`UserDecisionProfile`）
+- **能力**：26 个工具，最多 30 次迭代的多步推理
 
-2. **精力管理（4个）**
-   - get_user_energy, get_schedule_overview
-   - evaluate_energy_consumption - 评估事件的精力消耗（体力+精神）
-   - analyze_schedule - 分析日程安排合理性
+**工具分类（26个）：**
 
-3. **快照系统（2个）**
-   - get_snapshots, revert_snapshot
+| 分类 | 工具数 | 示例 |
+|------|--------|------|
+| 事件管理 | 6 | create_event, query_events, delete_event, update_event, complete_event, check_time_conflicts |
+| Routine管理 | 5 | create_routine_template, get_events_with_routines, handle_routine_instance, get_active_routines, get_routine_stats |
+| 时间解析 | 1 | parse_time (支持"明天下午3点"、"下周三"等) |
+| 精力管理 | 4 | evaluate_energy_consumption, analyze_schedule, get_user_energy, get_schedule_overview |
+| 用户偏好 | 3 | analyze_preferences, record_preference, provide_suggestions |
+| 快照系统 | 2 | create_snapshot, revert_snapshot |
 
-4. **用户偏好学习（2个）**
-   - analyze_preferences - 分析历史偏好，预测用户选择
-   - record_preference - 记录用户决策
+#### 3. PersonaAgent - 陪伴者
+- **功能**：生成温暖、简洁、拟人化的回复
+- **注入**：用户人格画像（`UserProfile`）
+- **风格**：1-3 句话，有同理心但不肉麻
 
-5. **交互式建议（1个）**
-   - provide_suggestions - 提供预设选项，降低用户输入难度
-   - 支持概率显示（根据历史偏好+当前上下文动态计算）
+#### 4. ObserverAgent - 观察者
+- **功能**：异步分析对话，学习用户画像
+- **触发**：对话结束 / 8-15 条消息 / 定时分析
+- **更新**：`UserProfile`（人格）+ `UserDecisionProfile`（决策偏好）
 
-6. **长期日程管理（5个）**
-   - create_routine - 创建长期习惯（如每周一三四五健身）
-   - get_routines - 获取所有长期日程
-   - get_active_routines_for_today - 获取今天待完成的习惯
-   - mark_routine_completed - 标记完成
-   - get_routine_stats - 查看完成率统计
+### 专用专家 Agent
 
-**智能特性：**
-- **动态权重决策**：历史偏好（0-100%）+ 当前上下文（0-100%）
-- **上下文感知**：综合时间、能量、日程密度等因素
-- **概率预测**：为选项添加 AI 预测的用户选择概率
-- **灵活时间**：支持"每天再定时间"的 Routine
-- **补课机制**：智能建议如何补上未完成的习惯
-
-### 专用 Agent 系统
-
-除了核心的 Jarvis Agent，系统还包含三个专用 Agent：
-
-#### 1. Energy Evaluator Agent - 精力消耗评估专家
+#### Energy Evaluator Agent
 - **功能**：评估事件在体力（Physical）和精神（Mental）两个维度的消耗程度
-- **评估标准**：
-  - Low (0-3分): 轻度消耗
-  - Medium (4-6分): 中等消耗
-  - High (7-10分): 高强度消耗
-- **输出结构**：level（等级）+ score（分数）+ description（描述）+ factors（影响因素）
-- **应用场景**：
-  - 事件创建时自动评估精力消耗
-  - 帮助用户合理安排日程
-  - 为智能调度提供数据支持
+- **评估标准**：Low (0-3分) / Medium (4-6分) / High (7-10分)
+- **输出结构**：level + score + description + factors
 
-#### 2. Smart Scheduler Agent - 智能日程调度助手
+#### Smart Scheduler Agent
 - **功能**：检测不合理的事件组合，提供精力优化建议
-- **检测问题**：
-  - 连续高强度体力消耗（3个以上高体力活动）
-  - 连续高强度精神工作（3个以上高精神活动）
-  - 单一维度过度集中（全天体力活 / 全天脑力工作）
-  - 缺乏休息或调节
-- **优化建议**：提供具体的日程调整建议
-- **两种模式**：
-  - LLM 模式：深度分析，综合考虑用户偏好
-  - 快速模式：基于规则的快速检查
+- **检测问题**：连续高强度活动、单一维度过度集中、缺乏休息
 
-#### 3. Context Extractor Agent - 用户画像推测专家
-- **功能**：通过观察事件学习用户画像，而不是主动询问
-- **提取类型**：
-  - relationship（关系状态）：单身/约会中/已婚/复杂
-  - identity（用户身份）：职业/行业/职位
-  - preference（个人喜好）：活动类型/社交倾向/工作风格
-  - habit（个人习惯）：作息/工作时间/运动模式
-- **工作原则**：
-  - 只提取有明确证据的推测
-  - 不强行推测，信息不足时该类型就不返回
-  - 优先考虑高频行为
-  - 注意隐私边界
-- **应用场景**：
-  - 自动学习用户画像
-  - 支持个性化建议
-  - 逐渐提升服务质量
+#### Duration Estimator Agent
+- **功能**：基于历史数据估算事件时长
+- **特点**：置信度追踪，支持用户纠正和学习
 
 ## 数据库
 
@@ -506,16 +489,23 @@ POST /api/v1/chat
 - [x] 对话记录持久化 ⭐ NEW
   - [x] 对话历史存储
   - [x] 上下文传递
-- [x] 增量数据库快照 ⭐ NEW
+- [x] 快照回滚系统 ⭐ NEW
   - [x] 快照数据模型
-  - [x] 只存储变更行
-  - [ ] 快照回滚逻辑（待实现）
+  - [x] 创建/撤销/回滚功能
+  - [x] 支持三种操作类型（create/update/delete）
 
 ### Phase 2.5: 增强功能完善 (P1.5) - 🚧 进行中
-- [ ] Routine 智能提醒（主动推送）
+- [ ] 智能提醒推送系统
+  - [ ] 日程开始前提醒
+  - [ ] 习惯打卡提醒
+  - [ ] 灵活时间确认提醒
 - [ ] 用户画像纠错机制
-- [ ] 快照回滚功能实现
-- [ ] chatgpt-on-wechat 集成
+  - [ ] 纠错信号识别
+  - [ ] 置信度动态调整
+  - [ ] 纠错记录存储
+- [ ] 多平台前端适配
+  - [ ] 微信机器人接入
+  - [ ] iOS 应用适配
 
 ### Phase 3: 生活控制台 (P2)
 - [ ] 统计 API

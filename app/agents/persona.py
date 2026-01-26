@@ -106,7 +106,7 @@ class PersonaAgent(BaseAgent):
             rendered_prompt = prompt_service.render_with_profile(
                 "agents/persona",
                 user_profile=context.user_profile,
-                current_time=context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                current_time=context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
             )
             return rendered_prompt
         except:
@@ -114,7 +114,7 @@ class PersonaAgent(BaseAgent):
             prompt = base_prompt
 
             # 替换时间
-            current_time = context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            current_time = context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
             prompt = prompt.replace("{current_time}", current_time)
 
             # 注入人格画像（简化版）

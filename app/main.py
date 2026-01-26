@@ -1,14 +1,19 @@
 """
 UniLife Backend - Main Application
 """
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api import chat, events, users, snapshots, stats, diaries
-from app.scheduler.background_tasks import task_scheduler
+from app.api import chat, events, users, snapshots, stats, diaries, auth, sync, devices, notifications
 from app.utils.logger import init_logging, LogColors
+
+# 延迟导入后台任务调度器（Serverless 环境下不需要）
+task_scheduler = None
+if not os.getenv("SERVERLESS"):
+    from app.scheduler.background_tasks import task_scheduler
 
 
 @asynccontextmanager
@@ -23,17 +28,25 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"{LogColors.bold('🚀 UniLife Backend starting...')}")
     logger.info(f"🔧 Debug mode: {settings.debug}")
-    logger.info(f"🌐 API listening on http://{settings.api_host}:{settings.api_port}")
 
-    # Start background task scheduler
-    task_scheduler.start()
+    # 检测运行环境
+    is_serverless = os.getenv("SERVERLESS")
+    if is_serverless:
+        logger.info(f"{LogColors.bold('☁️ Running in Serverless mode (background tasks disabled)')}")
+    else:
+        logger.info(f"🌐 API listening on http://{settings.api_host}:{settings.api_port}")
+
+    # Start background task scheduler (非 Serverless 环境)
+    if not is_serverless and task_scheduler:
+        task_scheduler.start()
 
     yield
 
     # Shutdown
     logger.info("🛑 UniLife Backend shutting down...")
-    # Stop background task scheduler
-    task_scheduler.stop()
+    # Stop background task scheduler (非 Serverless 环境)
+    if not is_serverless and task_scheduler:
+        task_scheduler.stop()
 
 
 # Create FastAPI application
@@ -54,12 +67,16 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth.router)  # Auth router already has prefix in its definition
 app.include_router(chat.router, prefix="/api/v1", tags=["Chat"])
 app.include_router(events.router, prefix="/api/v1", tags=["Events"])
 app.include_router(users.router, prefix="/api/v1", tags=["Users"])
 app.include_router(snapshots.router, prefix="/api/v1", tags=["Snapshots"])
 app.include_router(stats.router, prefix="/api/v1", tags=["Stats"])
 app.include_router(diaries.router, prefix="/api/v1/diaries", tags=["Diaries"])
+app.include_router(sync.router, prefix="/api/v1", tags=["Sync"])
+app.include_router(devices.router, prefix="/api/v1", tags=["Devices"])
+app.include_router(notifications.router, prefix="/api/v1", tags=["Notifications"])
 
 
 @app.get("/")

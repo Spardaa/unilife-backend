@@ -50,20 +50,20 @@ async def chat(request: ChatRequest):
         )
         conversation_id = conversation.id
 
-    # 保存用户消息
-    conversation_service.add_message(
-        conversation_id=conversation_id,
-        role="user",
-        content=request.message
-    )
-
     try:
-        # Call Agent Orchestrator
+        # Call Agent Orchestrator (before saving user message to avoid duplication)
         result = await agent_orchestrator.process_message(
             user_message=request.message,
             user_id=request.user_id,
             conversation_id=conversation_id,
             current_time=request.current_time  # Pass virtual time for testing
+        )
+
+        # Save user message after orchestrator processing
+        conversation_service.add_message(
+            conversation_id=conversation_id,
+            role="user",
+            content=request.message
         )
 
         reply = result["reply"]

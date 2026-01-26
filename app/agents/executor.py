@@ -154,7 +154,7 @@ class ExecutorAgent(BaseAgent):
             rendered_prompt = prompt_service.render_with_profile(
                 "agents/executor",
                 user_decision_profile=context.user_decision_profile,
-                current_time=context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                current_time=context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
             )
             return rendered_prompt
         except:
@@ -162,7 +162,7 @@ class ExecutorAgent(BaseAgent):
             prompt = base_prompt
 
             # 替换时间
-            current_time = context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            current_time = context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
             prompt = prompt.replace("{current_time}", current_time)
 
             # 注入决策偏好（简化版）

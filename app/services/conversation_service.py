@@ -7,9 +7,32 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine, desc, and_, or_
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
+import pytz
 
 from app.models.conversation import Conversation, Message, Base
 from app.config import settings
+
+
+def _get_user_local_time(utc_time: datetime, timezone_str: str = "Asia/Shanghai") -> datetime:
+    """
+    将 UTC 时间转换为用户本地时间
+
+    Args:
+        utc_time: UTC 时间
+        timezone_str: 时区字符串（如 "Asia/Shanghai"）
+
+    Returns:
+        用户本地时间
+    """
+    try:
+        tz = pytz.timezone(timezone_str)
+        # 如果 utc_time 没有 timezone 信息，先设置为 UTC
+        if utc_time.tzinfo is None:
+            utc_time = pytz.UTC.localize(utc_time)
+        return utc_time.astimezone(tz).replace(tzinfo=None)
+    except:
+        # 如果时区转换失败，直接返回原时间
+        return utc_time
 
 
 class ConversationService:
@@ -374,6 +397,11 @@ class ConversationService:
         """
         db = self.get_session()
         try:
+            # 获取用户时区
+            from app.services.db import db_service
+            user = await db_service.get_user(user_id)
+            user_timezone = user.get("timezone", "Asia/Shanghai") if user else "Asia/Shanghai"
+
             # 计算时间边界
             since = datetime.utcnow() - timedelta(hours=hours)
 
@@ -411,10 +439,12 @@ class ConversationService:
             # 只取最近的 max_messages 条消息（来回对话）
             all_messages = all_messages[-max_messages:]
 
-            # 转换为带时间戳的格式
+            # 转换为带时间戳的格式（用户本地时间）
             result = []
             for msg in all_messages:
-                timestamp = msg.created_at.strftime("%H:%M")
+                # 将 UTC 时间转换为用户本地时间
+                local_time = _get_user_local_time(msg.created_at, user_timezone)
+                timestamp = local_time.strftime("%H:%M")
                 result.append({
                     "role": msg.role,
                     "content": msg.content,

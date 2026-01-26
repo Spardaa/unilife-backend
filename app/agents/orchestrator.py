@@ -273,6 +273,31 @@ class AgentOrchestrator:
             user_decision_profile = None
 
         # 构建上下文
+        # 获取当前时间（用户本地时间）
+        now = datetime.utcnow()
+        current_hour = now.hour
+
+        # 判断当前时段
+        time_period = ""
+        if 0 <= current_hour < 5:
+            time_period = "凌晨"
+        elif 5 <= current_hour < 9:
+            time_period = "早上"
+        elif 9 <= current_hour < 12:
+            time_period = "上午"
+        elif 12 <= current_hour < 14:
+            time_period = "中午"
+        elif 14 <= current_hour < 18:
+            time_period = "下午"
+        elif 18 <= current_hour < 23:
+            time_period = "晚上"
+        else:  # 23-24
+            time_period = "深夜"
+
+        # 构建带时段信息的时间字符串
+        current_time_str = current_time or now.strftime("%Y-%m-%d %H:%M:%S")
+        current_time_with_period = f"{current_time_str} ({time_period}, {current_hour}点)"
+
         context = ConversationContext(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -280,7 +305,7 @@ class AgentOrchestrator:
             conversation_history=context_messages,
             user_profile=user_profile,
             user_decision_profile=user_decision_profile,
-            current_time=current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            current_time=current_time_with_period  # 传入带时段信息的时间
         )
 
         return context

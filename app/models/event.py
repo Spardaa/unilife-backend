@@ -178,6 +178,10 @@ class Event(BaseModel):
     # Status management
     status: EventStatus = Field(default=EventStatus.PENDING, description="Event status")
 
+    # Completion tracking
+    completed_at: Optional[datetime] = Field(None, description="When the event was marked as completed")
+    started_at: Optional[datetime] = Field(None, description="When the event was started (for IN_PROGRESS tracking)")
+
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation timestamp")
     updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update timestamp")

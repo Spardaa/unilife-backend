@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-UniLife is an AI-powered life scheduling assistant backend using FastAPI and DeepSeek LLM. It implements a multi-agent system with LLM + Tools architecture (similar to Cursor Agent), featuring a sophisticated "dual-time architecture" for flexible event display with rigid data storage.
+UniLife is an AI-powered life scheduling assistant backend using FastAPI and DeepSeek LLM. It implements a **4-layer multi-agent orchestration system** with LLM + Tools architecture (similar to Cursor Agent), featuring a sophisticated "dual-time architecture" for flexible event display with rigid data storage.
 
 **Tech Stack**: FastAPI, SQLAlchemy (SQLite/PostgreSQL), DeepSeek API, Pydantic, OpenAI-compatible Tools API
 
@@ -25,52 +25,76 @@ API docs available at: http://localhost:8000/docs
 python init_db.py
 
 # Run migrations in order when upgrading versions
-python migrate_db.py                    # Base migration (6 new fields)
-python migrate_routine.py               # Routine/habit system
-python migrate_enhanced_features.py     # Energy evaluation + user profiles
-python migrate_conversations.py         # Conversation persistence
+python migrations/migrate_add_decision_profile.py  # Decision preferences
+python migrate_routine_to_new_arch.py              # Routine system migration
 ```
 
 ### Testing
 ```bash
-pytest                                   # Run all tests
-pytest test_dual_time_architecture.py   # Run specific test
-pytest test_enhanced_features.py
-pytest test_routine.py
+pytest                                           # Run all tests
+pytest test_dual_time_architecture.py           # Run specific test
+pytest test_conversation.py                     # Conversation persistence
 ```
 
 ### Interactive Client
 ```bash
-python client.py                        # Terminal client for testing chat
+python client.py                                # Terminal client for testing chat
 ```
 
 ## Architecture Overview
+
+### 4-Layer Agent Orchestration
+
+The system uses `AgentOrchestrator` in `app/agents/orchestrator.py` to coordinate four specialized agents:
+
+```
+User Message → Orchestrator
+                    ↓
+        ┌───────────┼───────────┐
+        ↓           ↓           ↓
+    Router     Executor     Persona
+   (intent)    (tools)     (empathy)
+        │           │           │
+        └───────────┼───────────┘
+                    ↓
+            Response (sync)
+                    ↓
+            Observer (async)
+                    ↓
+        Update User Profiles
+```
+
+**Agent Responsibilities**:
+
+1. **RouterAgent** (`app/agents/router.py`): Intent classification and routing
+   - Outputs routing decision: `EXECUTOR` / `PERSONA` / `BOTH`
+   - Context filtering to reduce token usage by 40-60%
+
+2. **ExecutorAgent** (`app/agents/executor.py`): Rational tool execution
+   - No emotion, pure logic
+   - Injects user decision preferences (from `UserDecisionProfile`)
+   - Has access to 26 tools for database operations
+   - Max 30 iterations for multi-step reasoning
+
+3. **PersonaAgent** (`app/agents/persona.py`): Human-like response generation
+   - Warm, concise replies (1-3 sentences)
+   - Injects user personality profile (from `UserProfile`)
+   - No tool access, pure conversation
+
+4. **ObserverAgent** (`app/agents/observer.py`): Async profile learning
+   - Triggered after conversation ends or 8-15 messages
+   - Updates both `UserProfile` (personality) and `UserDecisionProfile` (preferences)
 
 ### Design Philosophy: "Like a Human"
 
 **Core Principle**: The AI should think like a human (processing lots of information internally) but speak concisely (only what's necessary).
 
 ```
-┌─────────────────────────────────────────┐
-│ Human-like Thinking Mode:                │
-│  - Process extensive information         │
-│  - Analyze context, retrieve habits      │
-│  - Predict options, assess risks         │
-│  - Do many things silently               │
-├─────────────────────────────────────────┤
-│ Human-like Output Mode:                  │
-│  - Think a lot, speak key points         │
-│  - Do more, speak less (high quality)    │
-│  - Make user feel "he really gets me"    │
-│  - Build trust and dependency            │
-└─────────────────────────────────────────┘
+Thinking Mode (Internal):  →  Output Mode (External):
+- Process extensive info    →  Think a lot, speak key points
+- Analyze context           →  Do more, speak less
+- Predict options           →  Make user feel understood
 ```
-
-**Key Differences from Traditional QA AI**:
-- **Not** a question-answering bot → **Action-oriented** AI assistant
-- **Not** explaining everything → **Silent learning**, occasional feedback
-- **Not**反复追问 → **Default confirm mode**, execute with reasonable defaults
-- **Not** long responses → **Concise replies**, essential info only
 
 **Decision Thresholds**:
 - Create/Modify events: ≥ 70% confidence → auto-execute
@@ -78,29 +102,9 @@ python client.py                        # Terminal client for testing chat
 - Below threshold: Use reasonable defaults, don't ask
 
 **Silent Learning**:
-- AI correctly predicts → Record silently, don't tell user
-- AI estimates, user doesn't correct → Record silently
-- AI estimates, user corrects → Say "(已记住)"
-- AI makes mistake → Explain "I've adjusted for you..."
-
-**Special Scenarios**:
-- **Delete long-term habit**: Confirm if ≥ 30 days OR ≥ 80% completion rate
-- **Fuzzy query**: Show all info, don't let user fall into 30% error
-- **Batch operations**: Understand context, respond with brief human touch
-
-See `prompts/jarvis_system.txt` for complete prompt specification.
-
-### Multi-Agent System (LLM + Tools)
-
-The core architecture follows Cursor Agent-style patterns:
-
-- **JarvisAgent** (`app/agents/jarvis.py`): Main agent that orchestrates tool calls through OpenAI-compatible function calling
-- **20 Tools** (`app/agents/tools.py`): Registered via `ToolRegistry`, exposed to LLM for database operations
-- **Specialist Agents**: EnergyEvaluator, SmartScheduler, ContextExtractor, DurationEstimator
-
-**Key Pattern**: The conversation loop in `JarvisAgent.chat()` (lines 66-122) supports multi-step reasoning with up to 30 iterations. Each iteration includes LLM decision, tool execution, and result feedback.
-
-**Critical Implementation**: The `_build_messages()` method (lines 138-200) must preserve full conversation history including `tool_calls` and `tool` role messages for LLM context continuity.
+- AI correctly predicts → Record silently
+- User corrects AI → Say "(已记住)"
+- AI makes mistake → "已为你调整..."
 
 ### Dual-Time Architecture (Flexible Display, Rigid Computation)
 
@@ -127,32 +131,79 @@ Sophisticated recurring event model in `app/models/routine.py`:
 
 ### User Profile Learning (Observation-Based)
 
-`ContextExtractorAgent` learns user profiles by observation, not questioning:
-- **Relationship**: single/dating/married/complicated
-- **Identity**: occupation/industry/position
-- **Preference**: activity types/social style/work style
-- **Habit**: sleep schedule/work hours/exercise frequency
+Two separate profile models updated by ObserverAgent:
 
-Files: `app/models/user_profile.py`, `app/agents/context_extractor.py`, `app/services/profile_service.py`
+**UserProfile** (`app/models/user_profile.py`): Personality and emotional state
+- Relationship status, identity (occupation/industry)
+- Preferences (activity types, social style, work style)
+- Habits (sleep schedule, work hours, exercise frequency)
+- Personality traits (emotional state, communication style)
+
+**UserDecisionProfile** (`app/models/user_decision_profile.py`): Decision preferences
+- Time preferences (start of day, deep work window)
+- Meeting preferences (stacking style, max back-to-back)
+- Energy profile (peak hours, energy by day)
+- Conflict resolution strategy
+- Scenario-based preferences
 
 ### Conversation Persistence
 
 Supports 15+ message exchanges with full context. Stores `tool_calls` and `tool` results for LLM continuity. See `app/models/conversation.py` and `app/services/conversation_service.py`.
 
+**Critical**: Messages must include `tool_calls` and `tool` role messages for multi-step reasoning context.
+
 ## Tool Registration Pattern
 
-All 20 tools are registered in `app/agents/tools.py` using:
+All 26 tools are registered in `app/agents/tools.py` using:
 
 ```python
 tool_registry.register(
     name="tool_name",
-    description="...",
-    parameters={...},  # JSON Schema for OpenAI API
+    description="...",  # Shown to LLM
+    parameters={...},   # JSON Schema for OpenAI API
     func=tool_function
 )
 ```
 
-Tool categories: Event Management (6), Energy Management (4), Snapshots (2), User Preferences (2), Suggestions (1), Routines (5)
+Tool categories:
+- Event Management (6): create, query, update, delete, complete, check conflicts
+- Routine Management (5): create template, get with routines, handle instance
+- Time Management (1): parse_time
+- Energy Management (4): evaluate consumption, analyze schedule, check energy
+- User Preferences (3): analyze, record, provide suggestions
+- Snapshots (2): create, restore
+
+## Prompt Template System
+
+**File**: `app/services/prompt.py`
+
+Dynamic variable injection into agent prompts:
+
+```python
+# For ExecutorAgent - injects decision preferences
+prompt_service.render_template(
+    "agents/executor",
+    user_decision=decision_profile_dict,
+    current_time=now_str
+)
+
+# For PersonaAgent - injects personality
+prompt_service.render_with_profile(
+    "agents/persona",
+    user_profile=profile_dict,
+    current_time=now_str
+)
+```
+
+**Available Variables**:
+- `{current_time}`: Current datetime string
+- `{user_profile}`: Full UserProfile JSON
+- `{user_decision}`: Full UserDecisionProfile JSON
+- `{personality}`: Personality summary
+- `{emotional_state}`: Current emotional state
+- `{stress_level}`: Current stress level
+
+Prompt files are in `prompts/agents/` directory (router.txt, executor.txt, persona.txt, observer.txt).
 
 ## Smart Time Parsing
 
@@ -184,6 +235,8 @@ SQLITE_PATH=unilife.db
 JWT_SECRET_KEY=dev_secret_123     # CHANGE in production
 ```
 
+Configuration is managed by `app/config.py` using `pydantic-settings`.
+
 ## Important Architecture Notes
 
 1. **Migration Strategy**: Python scripts (not Alembic) for simplicity - run in version order
@@ -195,5 +248,39 @@ JWT_SECRET_KEY=dev_secret_123     # CHANGE in production
 ## API Structure
 
 - **Main endpoint**: `POST /api/v1/chat` - Conversational interface
-- **REST endpoints**: Events CRUD, Users, Snapshots, Statistics
+- **REST endpoints**: Events CRUD, Users, Snapshots, Statistics, Conversations, Diaries
 - **WebSocket**: Not implemented (planned for real-time updates)
+
+## Key Files Quick Reference
+
+**Orchestration**:
+- `app/agents/orchestrator.py` - Main coordinator
+- `app/agents/base.py` - Base interfaces (Intent, RoutingDecision, ConversationContext, AgentResponse)
+
+**Agent Implementations**:
+- `app/agents/router.py` - Intent classification
+- `app/agents/executor.py` - Tool execution
+- `app/agents/persona.py` - Response generation
+- `app/agents/observer.py` - Profile learning
+
+**Data Models**:
+- `app/models/event.py` - Event model with dual-time
+- `app/models/routine.py` - Four-layer routine system
+- `app/models/user_profile.py` - Personality profile
+- `app/models/user_decision_profile.py` - Decision preferences
+- `app/models/conversation.py` - Conversation persistence
+
+**Tools & Services**:
+- `app/agents/tools.py` - 26 registered tools
+- `app/services/llm.py` - LLM wrapper with retry
+- `app/services/prompt.py` - Prompt template system
+- `app/services/conversation_service.py` - Conversation persistence
+- `app/services/decision_profile_service.py` - Decision preferences
+
+**API**:
+- `app/api/chat.py` - Main chat endpoint
+- `app/main.py` - Application entry point
+
+**Documentation**:
+- `docs/Architecture.md` - Detailed architecture documentation (Chinese)
+- `DUAL_TIME_ARCHITECTURE.md` - Dual-time design specification

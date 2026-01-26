@@ -5,6 +5,7 @@ Run this script to initialize the database with sample data
 """
 import sys
 import os
+import asyncio
 
 # Add app directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -14,7 +15,7 @@ from app.models.user import User
 import uuid
 
 
-def init_database():
+async def init_database():
     """Initialize database and create sample user"""
     print("=" * 50)
     print("UniLife Database Initialization")
@@ -23,6 +24,17 @@ def init_database():
     # Initialize database (create tables)
     db_service.initialize()
     print("\n✓ Database tables created")
+
+    # Also create routine tables
+    from app.models.routine import Base as RoutineBase
+    from app.models.user_decision_profile import Base as DecisionProfileBase
+    from sqlalchemy import create_engine
+    from app.config import settings
+    engine = create_engine(settings.database_url)
+    RoutineBase.metadata.create_all(bind=engine)
+    print("✓ Routine tables created")
+    DecisionProfileBase.metadata.create_all(bind=engine)
+    print("✓ Decision profile tables created")
 
     # Create a sample user
     sample_user_id = str(uuid.uuid4())
@@ -59,7 +71,7 @@ def init_database():
     }
 
     try:
-        created_user = db_service.create_user(user_data)
+        created_user = await db_service.create_user(user_data)
         print(f"\n✓ Sample user created:")
         print(f"  - ID: {created_user['id']}")
         print(f"  - Email: {created_user['email']}")
@@ -131,12 +143,14 @@ def init_database():
 
     for event_data in sample_events:
         try:
-            created_event = db_service.create_event(event_data)
+            created_event = await db_service.create_event(event_data)
             print(f"\n✓ Sample event created:")
             print(f"  - ID: {created_event['id']}")
             print(f"  - Title: {created_event['title']}")
-            print(f"  - Type: {created_event['event_type']}")
-            print(f"  - Time: {created_event['start_time']} - {created_event['end_time']}")
+            print(f"  - Type: {created_event.get('event_type', 'N/A')}")
+            start = created_event.get('start_time')
+            end = created_event.get('end_time')
+            print(f"  - Time: {start} - {end}")
         except Exception as e:
             print(f"\n✗ Error creating event: {e}")
 
@@ -152,4 +166,4 @@ def init_database():
 
 
 if __name__ == "__main__":
-    init_database()
+    asyncio.run(init_database())

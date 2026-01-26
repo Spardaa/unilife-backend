@@ -54,6 +54,10 @@ class RoutineTemplate(Base):
     # 统计
     total_instances = Column(Integer, default=0)  # 生成的实例总数
     completed_instances = Column(Integer, default=0)  # 已完成的实例数
+    skipped_instances = Column(Integer, default=0)  # 跳过的实例数
+    cancelled_instances = Column(Integer, default=0)  # 取消的实例数
+    last_completed_at = Column(DateTime)  # 上次完成时间
+    current_streak = Column(Integer, default=0)  # 当前连续完成天数
 
     # 关联
     instances = relationship("RoutineInstance", back_populates="template", cascade="all, delete-orphan")
@@ -76,7 +80,11 @@ class RoutineTemplate(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "total_instances": self.total_instances,
-            "completed_instances": self.completed_instances
+            "completed_instances": self.completed_instances,
+            "skipped_instances": self.skipped_instances,
+            "cancelled_instances": self.cancelled_instances,
+            "last_completed_at": self.last_completed_at.isoformat() if self.last_completed_at else None,
+            "current_streak": self.current_streak
         }
 
 
@@ -98,7 +106,11 @@ class RoutineInstance(Base):
     sequence_item = Column(String)  # 这一次应该是"胸部训练"
 
     # 状态
-    status = Column(String, default="pending")  # pending, completed, cancelled, rescheduled, skipped
+    status = Column(String, default="pending")  # pending, in_progress, completed, cancelled, rescheduled, skipped
+
+    # Completion tracking
+    started_at = Column(DateTime)  # When the instance was started (for in_progress tracking)
+    completed_at = Column(DateTime)  # When the instance was marked as completed
 
     # 关联到 events 表（如果已经创建了普通事件）
     # 注意：不使用外键约束，因为 events 表在不同的 Base 中
@@ -122,6 +134,8 @@ class RoutineInstance(Base):
             "scheduled_time": self.scheduled_time,
             "sequence_item": self.sequence_item,
             "status": self.status,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "generated_event_id": self.generated_event_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
