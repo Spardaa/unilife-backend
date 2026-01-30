@@ -106,6 +106,11 @@ class EventBase(BaseModel):
     repeat_pattern: Optional[RepeatPattern] = Field(None, description="Repeat pattern for recurring events")
     routine_batch_id: Optional[str] = Field(None, description="Batch ID for AI-created recurring instances")
 
+    # Routine/Habit fields
+    is_template: Optional[bool] = Field(None, description="True = Routine template (not displayed in calendar)")
+    habit_interval: Optional[int] = Field(None, description="Habit interval in days (1=daily, 2=every 2 days, etc.)")
+    parent_event_id: Optional[str] = Field(None, description="Parent event ID (for Routine instances)")
+
     # Energy consumption (new system)
     energy_consumption: Optional[EnergyConsumption] = Field(None, description="Physical/mental energy consumption (0-100 each)")
 
@@ -119,11 +124,19 @@ class EventCreate(EventBase):
     pass
 
 
+class CreateInstanceRequest(BaseModel):
+    """Request to create an instance from a template"""
+    target_date: str = Field(..., description="Target date in YYYY-MM-DD format")
+
+
 class EventUpdate(BaseModel):
     """Update event model - all fields optional"""
     title: Optional[str] = None
     description: Optional[str] = None
     notes: Optional[str] = None
+
+    # Time information fields (matching EventBase)
+    event_date: Optional[datetime] = None
     time_period: Optional[TimePeriod] = None
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
@@ -138,10 +151,22 @@ class EventUpdate(BaseModel):
     location: Optional[str] = None
     participants: Optional[List[str]] = None
     status: Optional[EventStatus] = None
+
+    # Status timestamp fields
+    completed_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+
     repeat_pattern: Optional[RepeatPattern] = None
     energy_consumption: Optional[EnergyConsumption] = None
     is_physically_demanding: Optional[bool] = None
     is_mentally_demanding: Optional[bool] = None
+    is_template: Optional[bool] = None
+    habit_interval: Optional[int] = None
+    parent_event_id: Optional[str] = None
+    routine_batch_id: Optional[str] = None
+
+    class Config:
+        extra = "ignore"  # Ignore extra fields from iOS (id, user_id, created_at, updated_at)
 
 
 class EventResponse(EventBase):
@@ -158,6 +183,16 @@ class EventResponse(EventBase):
     ai_reasoning: Optional[str] = Field(None, description="AI decision reasoning")
     is_physically_demanding: bool = Field(default=False, description="User-set physical effort indicator")
     is_mentally_demanding: bool = Field(default=False, description="User-set mental effort indicator")
+    is_template: Optional[bool] = Field(None, description="Routine template marker")
+    parent_event_id: Optional[str] = Field(None, description="Parent event ID (for Routine instances)")
+    habit_completed_count: Optional[int] = Field(None, description="Number of completed habit instances")
+    habit_total_count: int = Field(default=21, description="Total habit instances (default 21)")
 
     class Config:
         from_attributes = True
+
+
+class EventsResponse(BaseModel):
+    """Response for events query with both instances and templates"""
+    instances: List[EventResponse] = Field(..., description="Real event instances (created/interacted with)")
+    templates: List[EventResponse] = Field(..., description="Template events for virtual expansion")

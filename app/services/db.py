@@ -2,8 +2,8 @@
 Database Service - SQLite with SQLAlchemy
 """
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, JSON, Numeric, Float
+from datetime import datetime, timedelta, date, timezone
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean, JSON, Numeric, Float, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 import uuid
@@ -156,6 +156,10 @@ class EventModel(Base):
     makeup_strategy = Column(String, nullable=True)  # Strategy when missed: "ask_user", "auto_next_day", "auto_same_day_next_week"
     parent_routine_id = Column(String, nullable=True)  # For routine instances: which routine they belong to
     routine_completed_dates = Column(JSON, nullable=True)  # Track which dates the routine was completed: ["2026-01-20", "2026-01-21"]
+    
+    # Habit counting (Phased System)
+    habit_completed_count = Column(Integer, default=0)
+    habit_total_count = Column(Integer, default=21)
 
     # Energy consumption (new system)
     energy_consumption = Column(JSON, nullable=True)  # {"physical": {...}, "mental": {...}, "evaluated_at": "...", "evaluated_by": "..."}
@@ -163,6 +167,9 @@ class EventModel(Base):
     # User-set effort indicators (for user input)
     is_physically_demanding = Column(Boolean, default=False)  # User-set indicator
     is_mentally_demanding = Column(Boolean, default=False)  # User-set indicator
+
+    # Routine template marker
+    is_template = Column(Boolean, default=False)  # True = Routine template (not displayed in calendar)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -207,7 +214,13 @@ class EventModel(Base):
             "energy_consumption": self.energy_consumption,
             "is_physically_demanding": self.is_physically_demanding,
             "is_mentally_demanding": self.is_mentally_demanding,
+            "is_template": self.is_template,
+            "parent_routine_id": self.parent_routine_id,
+            "routine_completed_dates": self.routine_completed_dates,
+            "habit_completed_count": self.habit_completed_count,
+            "habit_total_count": self.habit_total_count,
         }
+
 
 
 class SnapshotModel(Base):
@@ -354,6 +367,10 @@ class DatabaseService:
         if not self._initialized:
             self.initialize()
 
+    def _get_utc_timezone(self):
+        """Get UTC timezone"""
+        return timezone.utc
+
     # ============ Event Operations ============
 
     async def create_event(self, event_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -397,9 +414,15 @@ class DatabaseService:
             unsupported_fields = {
                 "duration_source", "duration_confidence", "duration_actual",
                 "ai_original_estimate", "display_mode",
-                "ai_description", "extracted_points"
+                "ai_description", "extracted_points",
+                "parent_event_id",      # Schema uses parent_event_id but DB uses parent_routine_id
+                "habit_interval",        # Not yet implemented in database
             }
             filtered_data = {k: v for k, v in event_data.items() if k not in unsupported_fields}
+            
+            # Map parent_event_id to parent_routine_id manually
+            if "parent_event_id" in event_data and event_data["parent_event_id"]:
+                filtered_data["parent_routine_id"] = event_data["parent_event_id"]
 
             event = EventModel(**filtered_data)
             session.add(event)
@@ -422,26 +445,41 @@ class DatabaseService:
         end_date: Optional[datetime] = None,
         limit: int = 100
     ) -> List[Dict[str, Any]]:
-        """Get events for a user with optional date range filter"""
+        """Get events for a user with optional date range filter.
+
+        Uses event_date as the primary field for date filtering, since recurring event
+        instances use event_date to indicate which day they belong to. Falls back to
+        start_time for legacy events that don't have event_date set.
+        """
         self._ensure_initialized()
         with self.get_session() as session:
+            from sqlalchemy import or_, and_, nullslast
             query = session.query(EventModel).filter(EventModel.user_id == user_id)
 
-            # Apply date range filter (for events with start_time)
+            # Apply date range filter using event_date (primary) or start_time (fallback)
+            # event_date is the primary field for determining which day an event belongs to
             if start_date:
-                # Include events with start_time >= start_date OR events without start_time (time_period events)
-                from sqlalchemy import or_
                 query = query.filter(
                     or_(
-                        EventModel.start_time >= start_date,
-                        EventModel.start_time.is_(None)
+                        # Events with event_date in range (recurring event instances)
+                        EventModel.event_date >= start_date,
+                        # Events without event_date but with start_time in range (legacy/fallback)
+                        and_(
+                            EventModel.event_date.is_(None),
+                            EventModel.start_time >= start_date
+                        )
                     )
                 )
             if end_date:
                 query = query.filter(
                     or_(
-                        EventModel.start_time <= end_date,
-                        EventModel.start_time.is_(None)
+                        # Events with event_date in range (recurring event instances)
+                        EventModel.event_date <= end_date,
+                        # Events without event_date but with start_time in range (legacy/fallback)
+                        and_(
+                            EventModel.event_date.is_(None),
+                            EventModel.start_time <= end_date
+                        )
                     )
                 )
 
@@ -451,10 +489,9 @@ class DatabaseService:
                     if hasattr(EventModel, key):
                         query = query.filter(getattr(EventModel, key) == value)
 
-            # Order by time_period first (NULLS LAST), then start_time
-            from sqlalchemy import nullslast
+            # Order by event_date first (NULLS LAST), then start_time
             results = query.order_by(
-                nullslast(EventModel.time_period),
+                nullslast(EventModel.event_date),
                 nullslast(EventModel.start_time)
             ).limit(limit).all()
             return [event.to_dict() for event in results]
@@ -468,6 +505,49 @@ class DatabaseService:
                 EventModel.user_id == user_id
             ).first()
             return event.to_dict() if event else None
+
+    async def get_event_instance(self, parent_id: str, event_date: date) -> Optional[Dict[str, Any]]:
+        """
+        Get a specific event instance by parent ID and date.
+
+        This is used to check if an instance already exists for a given date
+        before creating a new one (for on-demand instance creation).
+
+        Args:
+            parent_id: The template event ID (parent_event_id)
+            event_date: The target date to check for an instance
+
+        Returns:
+            The instance event dict if found, None otherwise
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            event = session.query(EventModel).filter(
+                EventModel.parent_routine_id == parent_id,
+                func.date(EventModel.event_date) == event_date
+            ).first()
+            return event.to_dict() if event else None
+
+    async def get_recurring_templates(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all recurring event templates for a user.
+
+        Templates are events with is_template=True that define repeat patterns.
+        These are used for client-side virtual expansion of recurring events.
+
+        Args:
+            user_id: The user ID to get templates for
+
+        Returns:
+            List of template event dictionaries
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            events = session.query(EventModel).filter(
+                EventModel.user_id == user_id,
+                EventModel.is_template == True
+            ).all()
+            return [event.to_dict() for event in events]
 
     async def update_event(
         self,
@@ -486,10 +566,92 @@ class DatabaseService:
             if not event:
                 return None
 
+            # Convert datetime objects to ISO format strings in energy_consumption
+            if "energy_consumption" in update_data and update_data["energy_consumption"] is not None:
+                ec = update_data["energy_consumption"]
+                if isinstance(ec, dict):
+                    if "evaluated_at" in ec and ec["evaluated_at"] is not None:
+                        if hasattr(ec["evaluated_at"], "isoformat"):
+                            ec["evaluated_at"] = ec["evaluated_at"].isoformat()
+                        else:
+                            ec["evaluated_at"] = str(ec["evaluated_at"])
+
+            # Capture old status before update
+            old_status = event.status
+
             # Update fields
             for key, value in update_data.items():
                 if hasattr(event, key) and value is not None:
                     setattr(event, key, value)
+            
+            # Habit Tracking Trigger: If status changed to COMPLETED
+            if update_data.get("status") == "COMPLETED":
+                # Check if this is a Habit Instance (has parent_routine_id)
+                if event.parent_routine_id:
+                    # Determine completion date (use event_date or today)
+                    completion_date = event.event_date or datetime.utcnow()
+                    
+                    # Update the Parent Routine's counts
+                    # (Logic encapsulated in mark_routine_completed_for_date)
+                    # We can't await here directly if this method is called within another transaction?
+                    # No, this method manages its own session. But we are inside `with self.get_session() as session`.
+                    # mark_routine_completed_for_date also opens a session. 
+                    # To avoid nested session issues, we should implement the logic directly here or use a helper that takes a session.
+                    
+                    parent_routine = session.query(EventModel).filter(
+                        EventModel.id == event.parent_routine_id,
+                        EventModel.user_id == user_id
+                    ).first()
+                    
+                    if parent_routine:
+                        # Add completion date
+                        if parent_routine.routine_completed_dates is None:
+                            parent_routine.routine_completed_dates = []
+
+                        date_str = completion_date.strftime("%Y-%m-%d")
+                        # Create new list for change detection
+                        current_dates = list(parent_routine.routine_completed_dates)
+                        if date_str not in current_dates:
+                            current_dates.append(date_str)
+                            parent_routine.routine_completed_dates = current_dates
+                        
+                        # Update counts
+                        parent_routine.habit_completed_count = len(current_dates)
+                        if parent_routine.habit_total_count is None or parent_routine.habit_total_count == 0:
+                            parent_routine.habit_total_count = 21
+                            
+                        # Sync counts to the current event instance so frontend updates immediately
+                        event.habit_completed_count = parent_routine.habit_completed_count
+                        event.habit_total_count = parent_routine.habit_total_count
+
+                        event.habit_completed_count = parent_routine.habit_completed_count
+                        event.habit_total_count = parent_routine.habit_total_count
+
+            # Habit Tracking Trigger: If status changed FROM COMPLETED (Un-completion)
+            if old_status == "COMPLETED" and event.status != "COMPLETED":
+                if event.parent_routine_id:
+                    # Determine completion date (use event_date or today)
+                    completion_date = event.event_date or datetime.utcnow()
+                    
+                    parent_routine = session.query(EventModel).filter(
+                        EventModel.id == event.parent_routine_id,
+                        EventModel.user_id == user_id
+                    ).first()
+                    
+                    if parent_routine and parent_routine.routine_completed_dates:
+                        # Remove completion date
+                        date_str = completion_date.strftime("%Y-%m-%d")
+                        current_dates = list(parent_routine.routine_completed_dates)
+                        
+                        if date_str in current_dates:
+                            current_dates.remove(date_str)
+                            parent_routine.routine_completed_dates = current_dates
+                            
+                            # Update counts
+                            parent_routine.habit_completed_count = len(current_dates)
+                            # Update instance to reflect valid count (or 0 if user wants strict reset, but correct series count is better)
+                            event.habit_completed_count = parent_routine.habit_completed_count
+                            event.habit_total_count = parent_routine.habit_total_count
 
             event.updated_at = datetime.utcnow()
             session.commit()
@@ -548,8 +710,8 @@ class DatabaseService:
                         return None
                     if hasattr(dt, 'tzinfo') and dt.tzinfo is not None:
                         return dt.astimezone(self._get_utc_timezone())
-                    # If naive datetime, assume it's already UTC (existing data)
-                    return dt
+                    # If naive datetime, assume it's already UTC and make it aware
+                    return dt.replace(tzinfo=self._get_utc_timezone())
 
                 event_start_utc = to_utc(event_start)
                 event_end_utc = to_utc(event_end)
@@ -847,6 +1009,408 @@ class DatabaseService:
 
     # ============ Routine/Habit Management ============
 
+    def _generate_routine_instances(
+        self,
+        template: Dict[str, Any],
+        repeat_pattern: Dict[str, Any],
+        days_ahead: int = 90
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate routine instances from template based on repeat pattern
+
+        Args:
+            template: Template event dict
+            repeat_pattern: Repeat pattern dict with 'type', 'weekdays', 'time', 'end_date'
+            days_ahead: Number of days to generate instances for
+
+        Returns:
+            List of instance event dicts
+        """
+        instances = []
+
+        # Get base date from template
+        base_date = template.get("start_time") or template.get("event_date")
+        if not base_date:
+            base_date = datetime.utcnow()
+        elif isinstance(base_date, str):
+            from datetime import datetime
+            base_date = datetime.fromisoformat(base_date.replace('Z', '+00:00'))
+
+        repeat_type = repeat_pattern.get("type", "daily")
+        end_date_str = repeat_pattern.get("end_date")
+        end_date = datetime.fromisoformat(end_date_str) if end_date_str else None
+
+        if repeat_type == "daily":
+            # Generate instances for each day
+            current_date = base_date
+            for i in range(days_ahead):
+                if end_date and current_date > end_date:
+                    break
+
+                instance_data = {
+                    "title": template.get("title"),
+                    "description": template.get("description"),
+                    "event_date": current_date,
+                    "time_period": template.get("time_period"),
+                    "start_time": self._parse_time(repeat_pattern.get("time"), current_date) if repeat_pattern.get("time") else None,
+                    "duration": template.get("duration"),
+                    "event_type": template.get("event_type"),
+                    "category": template.get("category"),
+                    "tags": template.get("tags", []),
+                    "location": template.get("location"),
+                    "participants": template.get("participants", []),
+                    "energy_consumption": template.get("energy_consumption"),
+                    "is_physically_demanding": template.get("is_physically_demanding", False),
+                    "is_mentally_demanding": template.get("is_mentally_demanding", False),
+                    "parent_event_id": template.get("id"),
+                    "is_template": False,
+                    "status": "PENDING"
+                }
+                instances.append(instance_data)
+                current_date += timedelta(days=1)
+
+        elif repeat_type == "weekly":
+            # Generate instances for specified weekdays
+            weekdays = repeat_pattern.get("weekdays", [])
+            current_date = base_date
+
+            for week in range((days_ahead // 7) + 2):
+                for day in range(7):
+                    current_date = base_date + timedelta(weeks=week, days=day)
+                    if end_date and current_date > end_date:
+                        break
+
+                    weekday_num = current_date.weekday()  # 0=Monday, 6=Sunday
+                    if weekday_num in weekdays:
+                        instance_data = {
+                            "title": template.get("title"),
+                            "description": template.get("description"),
+                            "event_date": current_date,
+                            "time_period": template.get("time_period"),
+                            "start_time": self._parse_time(repeat_pattern.get("time"), current_date) if repeat_pattern.get("time") else None,
+                            "duration": template.get("duration"),
+                            "event_type": template.get("event_type"),
+                            "category": template.get("category"),
+                            "tags": template.get("tags", []),
+                            "location": template.get("location"),
+                            "participants": template.get("participants", []),
+                            "energy_consumption": template.get("energy_consumption"),
+                            "is_physically_demanding": template.get("is_physically_demanding", False),
+                            "is_mentally_demanding": template.get("is_mentally_demanding", False),
+                            "parent_event_id": template.get("id"),
+                            "is_template": False,
+                            "status": "PENDING"
+                        }
+                        instances.append(instance_data)
+
+                if end_date and current_date > end_date:
+                    break
+
+        elif repeat_type == "monthly":
+            # Generate instances for same day of each month
+            current_date = base_date
+            for month in range(days_ahead // 30 + 2):
+                # Calculate same day of next month
+                month_offset = month + 1
+                try:
+                    next_date = base_date.replace(month=base_date.month + month_offset)
+                except ValueError:
+                    # Handle day overflow (e.g., Jan 31 -> Feb)
+                    next_date = (base_date.replace(month=base_date.month + month_offset, day=28))
+
+                if end_date and next_date > end_date:
+                    break
+
+                instance_data = {
+                    "title": template.get("title"),
+                    "description": template.get("description"),
+                    "event_date": next_date,
+                    "time_period": template.get("time_period"),
+                    "start_time": self._parse_time(repeat_pattern.get("time"), next_date) if repeat_pattern.get("time") else None,
+                    "duration": template.get("duration"),
+                    "event_type": template.get("event_type"),
+                    "category": template.get("category"),
+                    "tags": template.get("tags", []),
+                    "location": template.get("location"),
+                    "participants": template.get("participants", []),
+                    "energy_consumption": template.get("energy_consumption"),
+                    "is_physically_demanding": template.get("is_physically_demanding", False),
+                    "is_mentally_demanding": template.get("is_mentally_demanding", False),
+                    "parent_event_id": template.get("id"),
+                    "is_template": False,
+                    "status": "PENDING"
+                }
+                instances.append(instance_data)
+
+        return instances
+
+    def _parse_time(self, time_str: str, date: datetime) -> datetime:
+        """Parse time string (HH:MM) and combine with date"""
+        try:
+            hour, minute = map(int, time_str.split(":"))
+            return date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        except (ValueError, AttributeError):
+            return date
+
+    def _calculate_habit_dates(
+        self,
+        start_date: datetime,
+        interval: int = 1,
+        count: int = 21
+    ) -> List[datetime]:
+        """
+        Calculate habit instance dates
+
+        Args:
+            start_date: Starting date
+            interval: Days between instances (1=daily, 2=every 2 days, etc.)
+            count: Number of dates to calculate (default 21)
+
+        Returns:
+            List of datetime objects for habit instances
+        """
+        dates = []
+        current = start_date
+
+        for _ in range(count):
+            dates.append(current)
+            current += timedelta(days=interval)
+
+        return dates
+
+    async def bulk_create_events(
+        self,
+        events_data: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Bulk create multiple events
+
+        Args:
+            events_data: List of event data dicts
+
+        Returns:
+            List of created event dicts
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            created_events = []
+
+            for event_data in events_data:
+                # Generate ID
+                event_data = event_data.copy()
+                event_data["id"] = str(uuid.uuid4())
+
+                # Handle enums
+                if "time_period" in event_data and event_data["time_period"] is not None:
+                    if hasattr(event_data["time_period"], "value"):
+                        event_data["time_period"] = event_data["time_period"].value
+                    else:
+                        event_data["time_period"] = str(event_data["time_period"])
+
+                # Keep event_date as datetime object
+                if "event_date" in event_data and isinstance(event_data["event_date"], str):
+                    event_data["event_date"] = datetime.fromisoformat(event_data["event_date"].replace('Z', '+00:00'))
+
+                # Convert start_time to datetime if needed
+                if "start_time" in event_data and event_data["start_time"] is not None:
+                    if isinstance(event_data["start_time"], str):
+                        event_data["start_time"] = datetime.fromisoformat(event_data["start_time"].replace('Z', '+00:00'))
+                    elif isinstance(event_data["start_time"], datetime):
+                        pass  # Already datetime
+                    else:
+                        event_data["start_time"] = datetime.combine(event_data["start_time"], datetime.min.time())
+
+                # Filter unsupported fields (schema uses parent_event_id but DB uses parent_routine_id)
+                unsupported_fields = {
+                    "duration_source", "duration_confidence", "duration_actual",
+                    "ai_original_estimate", "display_mode",
+                    "ai_description", "extracted_points",
+                    "parent_event_id",  # Map to parent_routine_id below
+                }
+                filtered_data = {k: v for k, v in event_data.items() if k not in unsupported_fields}
+
+                # Map parent_event_id to parent_routine_id for DB column
+                if event_data.get("parent_event_id"):
+                    filtered_data["parent_routine_id"] = event_data["parent_event_id"]
+
+                event = EventModel(**filtered_data)
+                session.add(event)
+                created_events.append(event)
+
+            session.commit()
+
+            # Refresh all events and return as dicts
+            results = []
+            for event in created_events:
+                session.refresh(event)
+                results.append(event.to_dict())
+
+            return results
+
+    async def create_habit_instances(
+        self,
+        batch_id: str,
+        dates: List[datetime],
+        user_id: str,
+        template_event: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Batch create habit instances from a template
+
+        Args:
+            batch_id: Routine batch ID
+            dates: List of datetime objects for instances
+            user_id: User ID
+            template_event: Template event data to copy
+
+        Returns:
+            List of created event dicts
+        """
+        instances_data = []
+
+        for date in dates:
+            instance = template_event.copy()
+            instance["id"] = str(uuid.uuid4())  # New ID for each instance
+            instance["user_id"] = user_id
+            instance["routine_batch_id"] = batch_id
+            instance["event_date"] = date
+            instance["is_template"] = False
+            instance["parent_event_id"] = None
+            instance["status"] = "PENDING"
+            instances_data.append(instance)
+
+        return await self.bulk_create_events(instances_data)
+
+    async def cancel_habit_instances(
+        self,
+        batch_id: str,
+        user_id: str
+    ) -> int:
+        """
+        Cancel all pending instances in a habit batch
+
+        Args:
+            batch_id: Routine batch ID
+            user_id: User ID
+
+        Returns:
+            Number of instances cancelled
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            # Query pending instances in batch
+            from sqlalchemy import and_
+            events = session.query(EventModel).filter(
+                and_(
+                    EventModel.routine_batch_id == batch_id,
+                    EventModel.user_id == user_id,
+                    EventModel.status == "PENDING"
+                )
+            ).all()
+
+            cancelled_count = 0
+            for event in events:
+                event.status = "CANCELLED"
+                cancelled_count += 1
+
+            session.commit()
+            return cancelled_count
+
+    async def get_habit_batches(
+        self,
+        user_id: str,
+        active_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all habit batches for a user
+
+        Args:
+            user_id: User ID
+            active_only: If True, only return batches with pending instances
+
+        Returns:
+            List of batch dicts with batch_id, instance_count, completed_count
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            # Get all habit events
+            events = session.query(EventModel).filter(
+                EventModel.user_id == user_id,
+                EventModel.event_type == "habit",
+                EventModel.routine_batch_id.isnot(None)
+            ).all()
+
+            # Group by batch_id
+            batches = {}
+            for event in events:
+                batch_id = event.routine_batch_id
+                if batch_id not in batches:
+                    batches[batch_id] = {
+                        "batch_id": batch_id,
+                        "total_instances": 0,
+                        "completed_instances": 0,
+                        "pending_instances": 0,
+                        "cancelled_instances": 0,
+                        "template": event.to_dict()
+                    }
+
+                batches[batch_id]["total_instances"] += 1
+                status = event.status
+                if status == "COMPLETED":
+                    batches[batch_id]["completed_instances"] += 1
+                elif status == "PENDING":
+                    batches[batch_id]["pending_instances"] += 1
+                elif status == "CANCELLED":
+                    batches[batch_id]["cancelled_instances"] += 1
+
+            # Filter to active batches if requested
+            result = list(batches.values())
+            if active_only:
+                result = [b for b in result if b["pending_instances"] > 0]
+
+            return result
+
+    async def get_active_habit_batches(self) -> List[Dict[str, Any]]:
+        """
+        Get all active habit batches that need replenishment
+
+        Returns:
+            List of batch dicts with user_id, batch_id, pending_count
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            # Get all habit events grouped by batch_id
+            from sqlalchemy import func
+            results = session.query(
+                EventModel.user_id,
+                EventModel.routine_batch_id,
+                func.count(EventModel.id).label('total')
+            ).filter(
+                EventModel.event_type == "habit",
+                EventModel.routine_batch_id.isnot(None)
+            ).group_by(
+                EventModel.user_id,
+                EventModel.routine_batch_id
+            ).all()
+
+            active_batches = []
+            for user_id, batch_id, total in results:
+                # Count pending instances for each batch
+                pending = session.query(func.count(EventModel.id)).filter(
+                    EventModel.user_id == user_id,
+                    EventModel.routine_batch_id == batch_id,
+                    EventModel.status == "PENDING"
+                ).scalar() or 0
+
+                if pending < 20:
+                    active_batches.append({
+                        "user_id": user_id,
+                        "batch_id": batch_id,
+                        "pending_count": pending
+                    })
+
+            return active_batches
+
     async def create_routine(
         self,
         user_id: str,
@@ -858,6 +1422,11 @@ class DatabaseService:
         makeup_strategy: str = "ask_user",
         category: str = "LIFE",
         duration: Optional[int] = None,
+        # Explicit arguments to ensure persistence
+        repeat_pattern: Optional[Dict[str, Any]] = None,
+        event_date: Optional[datetime] = None,
+        time_period: Optional[str] = "ANYTIME",
+        is_template: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
         """Create a new routine/habit"""
@@ -868,13 +1437,17 @@ class DatabaseService:
                 user_id=user_id,
                 title=title,
                 description=description,
-                event_type="HABIT",
+                event_type="habit",
                 category=category,
                 repeat_rule=repeat_rule,
+                repeat_pattern=repeat_pattern,
                 is_flexible=is_flexible,
                 preferred_time_slots=preferred_time_slots or [],
                 makeup_strategy=makeup_strategy,
                 duration=duration,
+                event_date=event_date,
+                time_period=time_period,
+                is_template=is_template,
                 routine_completed_dates=[],
                 status="PENDING",
                 **kwargs
@@ -890,7 +1463,7 @@ class DatabaseService:
         with self.get_session() as session:
             query = session.query(EventModel).filter(
                 EventModel.user_id == user_id,
-                EventModel.event_type == "HABIT",
+                EventModel.event_type == "habit",
                 EventModel.parent_routine_id.is_(None)  # Only parent routines, not instances
             )
 
@@ -921,7 +1494,7 @@ class DatabaseService:
         with self.get_session() as session:
             routines = session.query(EventModel).filter(
                 EventModel.user_id == user_id,
-                EventModel.event_type == "HABIT",
+                EventModel.event_type == "habit",
                 EventModel.parent_routine_id.is_(None)
             ).all()
 
@@ -987,8 +1560,16 @@ class DatabaseService:
                 routine.routine_completed_dates = []
 
             date_str = completion_date.strftime("%Y-%m-%d")
-            if date_str not in routine.routine_completed_dates:
-                routine.routine_completed_dates.append(date_str)
+            # Create a new list to ensure SQLAlchemy detects change
+            current_dates = list(routine.routine_completed_dates)
+            if date_str not in current_dates:
+                current_dates.append(date_str)
+                routine.routine_completed_dates = current_dates
+            
+            # Update counts for Habit Tracking
+            routine.habit_completed_count = len(current_dates)
+            if routine.habit_total_count is None or routine.habit_total_count == 0:
+                routine.habit_total_count = 21
 
             routine.updated_at = datetime.utcnow()
             session.commit()

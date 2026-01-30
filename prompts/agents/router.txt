@@ -15,8 +15,8 @@
 ### 操作类意图 (routing = "executor")
 - `CREATE_EVENT`: 创建新事件、安排日程
 - `QUERY_EVENT`: 查询日程、查看事件
-- `UPDATE_EVENT`: 修改事件、更改时间
-- `DELETE_EVENT`: 删除事件、取消安排
+- `UPDATE_EVENT`: 修改事件、更改时间、调整重复规则
+- `DELETE_EVENT`: 删除事件、取消安排、停止习惯
 - `UNDO_CHANGE`: 撤销操作
 - `CHECK_ENERGY`: 查看能量状态
 - `SUGGEST_SCHEDULE`: 请求日程建议
@@ -120,6 +120,10 @@
 **示例 5**: "明天的会议能改到下午吗？我上午有事"
   intent: UPDATE_EVENT, routing: "both", confidence: 0.92
   related_context_count: 6（需要修改事件，需要找到之前的会议）
+
+**示例 5b**: "把每天的背单词改成每周一三五"
+  intent: UPDATE_EVENT, routing: "executor", confidence: 0.95
+  related_context_count: 4（需要修改重复规则）
 
 **示例 6**: "上午10点"（上下文：助手刚问了"请选择健身时间"）
   intent: CREATE_EVENT, routing: "executor", confidence: 0.90

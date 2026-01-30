@@ -204,6 +204,11 @@ class Event(BaseModel):
     repeat_pattern: Optional[RepeatPattern] = Field(None, description="Repeat pattern for recurring events")
     routine_batch_id: Optional[str] = Field(None, description="Batch ID for AI-created recurring event instances")
 
+    # Routine/Habit fields
+    is_template: Optional[bool] = Field(None, description="True = Routine template (not displayed in calendar)")
+    habit_interval: Optional[int] = Field(None, description="Habit interval in days (1=daily, 2=every 2 days, etc.)")
+    parent_event_id: Optional[str] = Field(None, description="Parent event ID (for Routine instances)")
+
     # Location and participants
     location: Optional[str] = Field(None, description="Event location")
     participants: List[str] = Field(default_factory=list, description="Participant list")

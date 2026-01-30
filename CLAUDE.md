@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 UniLife is an AI-powered life scheduling assistant backend using FastAPI and DeepSeek LLM. It implements a **4-layer multi-agent orchestration system** with LLM + Tools architecture (similar to Cursor Agent), featuring a sophisticated "dual-time architecture" for flexible event display with rigid data storage.
 
-**Tech Stack**: FastAPI, SQLAlchemy (SQLite/PostgreSQL), DeepSeek API, Pydantic, OpenAI-compatible Tools API
+**Tech Stack**: FastAPI, SQLAlchemy 2.0 (SQLite/PostgreSQL), DeepSeek API, Pydantic v2, APScheduler, OpenAI-compatible Tools API
+
+**Deployment**: Supports both traditional server (with background tasks) and serverless environments (Railway, Render, etc.)
 
 ## Common Development Commands
 
@@ -25,8 +27,10 @@ API docs available at: http://localhost:8000/docs
 python init_db.py
 
 # Run migrations in order when upgrading versions
-python migrations/migrate_add_decision_profile.py  # Decision preferences
-python migrate_routine_to_new_arch.py              # Routine system migration
+python migrations/migrate_add_decision_profile.py    # Decision preferences
+python migrations/migrate_add_event_date.py          # Event date field
+python migrations/migrate_add_is_template.py         # Template/is_template flag
+python migrations/migrate_add_completion_tracking.py # Completion tracking
 ```
 
 ### Testing
@@ -34,6 +38,9 @@ python migrate_routine_to_new_arch.py              # Routine system migration
 pytest                                           # Run all tests
 pytest test_dual_time_architecture.py           # Run specific test
 pytest test_conversation.py                     # Conversation persistence
+pytest test_time_parser.py                      # Time parsing tests
+pytest test_integration_dual_time.py            # Integration tests
+pytest test_scenarios_dual_time.py              # Scenario-based tests
 ```
 
 ### Interactive Client
@@ -227,12 +234,28 @@ See `app/agents/energy_evaluator.py`, `app/agents/smart_scheduler.py`
 
 Required `.env` variables:
 ```bash
+# LLM Configuration (REQUIRED)
 DEEPSEEK_API_KEY=sk-***           # REQUIRED - LLM provider
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 DEEPSEEK_MODEL=deepseek-chat
+
+# Database
 DB_TYPE=sqlite                    # or postgresql
 SQLITE_PATH=unilife.db
+POSTGRESQL_URL=postgresql+asyncpg://user:pass@host:5432/db  # for PostgreSQL
+
+# Authentication
 JWT_SECRET_KEY=dev_secret_123     # CHANGE in production
+JWT_ALGORITHM=HS256
+JWT_EXPIRE_MINUTES=10080          # 7 days
+
+# API Configuration
+API_HOST=0.0.0.0
+API_PORT=8000
+DEBUG=True
+
+# Serverless Deployment (optional)
+SERVERLESS=True                   # Set to disable background tasks in serverless env
 ```
 
 Configuration is managed by `app/config.py` using `pydantic-settings`.
@@ -244,11 +267,18 @@ Configuration is managed by `app/config.py` using `pydantic-settings`.
 3. **Retry Logic**: Exponential backoff with 3 retries, 10-min total timeout in `app/services/llm.py`
 4. **Time Zone**: Uses `pytz` for timezone handling
 5. **Database**: Async SQLAlchemy 2.0 with SQLite for dev, PostgreSQL for production
+6. **Serverless Mode**: Set `SERVERLESS=True` to disable background task scheduler
+7. **Habit Replenishment**: Background scheduler runs daily at 2 AM to maintain 20 pending habit instances per batch
 
 ## API Structure
 
 - **Main endpoint**: `POST /api/v1/chat` - Conversational interface
+- **Authentication**: `POST /auth/register`, `POST /auth/login`, `GET /auth/me`
 - **REST endpoints**: Events CRUD, Users, Snapshots, Statistics, Conversations, Diaries
+- **Device Management**: Device registration and fingerprinting
+- **Notifications**: Notification CRUD and delivery
+- **Habits**: Habit template and instance management
+- **Sync**: Cross-device data synchronization
 - **WebSocket**: Not implemented (planned for real-time updates)
 
 ## Key Files Quick Reference
@@ -279,7 +309,18 @@ Configuration is managed by `app/config.py` using `pydantic-settings`.
 
 **API**:
 - `app/api/chat.py` - Main chat endpoint
+- `app/api/events.py` - Events CRUD
+- `app/api/users.py` - User management
+- `app/api/auth.py` - Authentication (JWT)
+- `app/api/devices.py` - Device management
+- `app/api/notifications.py` - Notifications
+- `app/api/habits.py` - Habit management
+- `app/api/sync.py` - Data synchronization
 - `app/main.py` - Application entry point
+
+**Background Tasks**:
+- `app/scheduler/background_tasks.py` - APScheduler wrapper
+- `app/tasks/habit_replenishment.py` - Daily habit instance replenishment (2 AM)
 
 **Documentation**:
 - `docs/Architecture.md` - Detailed architecture documentation (Chinese)

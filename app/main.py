@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api import chat, events, users, snapshots, stats, diaries, auth, sync, devices, notifications
+from app.api import chat, events, users, snapshots, stats, diaries, auth, sync, devices, notifications, habits
 from app.utils.logger import init_logging, LogColors
 
 # 延迟导入后台任务调度器（Serverless 环境下不需要）
@@ -39,6 +39,14 @@ async def lifespan(app: FastAPI):
     # Start background task scheduler (非 Serverless 环境)
     if not is_serverless and task_scheduler:
         task_scheduler.start()
+
+    # Start habit replenishment scheduler
+    if not is_serverless:
+        from app.tasks.habit_replenishment import start_scheduler
+        try:
+            start_scheduler()
+        except Exception as e:
+            logger.warning(f"Failed to start habit replenishment scheduler: {e}")
 
     yield
 
@@ -77,6 +85,7 @@ app.include_router(diaries.router, prefix="/api/v1/diaries", tags=["Diaries"])
 app.include_router(sync.router, prefix="/api/v1", tags=["Sync"])
 app.include_router(devices.router, prefix="/api/v1", tags=["Devices"])
 app.include_router(notifications.router, prefix="/api/v1", tags=["Notifications"])
+app.include_router(habits.router, prefix="/api/v1", tags=["Habits"])
 
 
 @app.get("/")

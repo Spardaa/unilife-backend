@@ -90,11 +90,6 @@ def register_all_tools():
                     "type": "integer",
                     "description": "持续时长（分钟）"
                 },
-                "duration_source": {
-                    "type": "string",
-                    "enum": ["user_exact", "ai_estimate", "default", "user_adjusted"],
-                    "description": "时长来源（可选，通常由系统自动设置）"
-                },
                 "energy_required": {
                     "type": "string",
                     "enum": ["HIGH", "MEDIUM", "LOW"],
@@ -102,11 +97,11 @@ def register_all_tools():
                 },
                 "urgency": {
                     "type": "integer",
-                    "description": "紧急程度 1-5"
+                    "description": "紧急程度 1-5（AI决策字段，用于优先级排序）"
                 },
                 "importance": {
                     "type": "integer",
-                    "description": "重要程度 1-5"
+                    "description": "重要程度 1-5（AI决策字段，用于艾森豪威尔矩阵）"
                 },
                 "category": {
                     "type": "string",
@@ -206,6 +201,20 @@ def register_all_tools():
                     "type": "string",
                     "enum": ["PENDING", "COMPLETED", "CANCELLED"],
                     "description": "新状态"
+                },
+                "frequency": {
+                    "type": "string",
+                    "enum": ["daily", "weekly", "custom"],
+                    "description": "重复频率 (daily/weekly/custom)"
+                },
+                "days": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "重复星期 (0=周一)"
+                },
+                "is_flexible": {
+                    "type": "boolean",
+                    "description": "是否灵活"
                 }
             },
             "required": ["user_id", "event_id"]
@@ -828,47 +837,45 @@ async def tool_create_event(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     duration: Optional[int] = None,
-    duration_source: Optional[str] = None,
     energy_required: str = "MEDIUM",
     urgency: int = 3,
     importance: int = 3,
     category: str = "WORK",
     location: Optional[str] = None
 ) -> Dict[str, Any]:
-    """创建新事件（集成AI时长估计）"""
+    """
+    创建新事件（集成AI时长估计）
+
+    注意：以下字段用于AI内部决策，但当前数据库版本暂不支持持久化：
+    - duration_source, duration_confidence, ai_original_estimate, display_mode
+    - ai_description, extracted_points
+    这些字段会在db.py中被过滤掉，不会保存到数据库。
+    """
 
     # 解析时间
     start_dt = datetime.fromisoformat(start_time) if start_time else None
     end_dt = datetime.fromisoformat(end_time) if end_time else None
 
-    # 时长估计逻辑
-    _duration_source = duration_source or "user_exact"
+    # 时长估计逻辑（用于显示和学习，不持久化到数据库）
+    duration_source = "user_exact"  # 内部追踪，不保存到数据库
     duration_confidence = 1.0
-    ai_original_estimate = None
 
     # 如果用户没有提供时长和结束时间，AI估计
     if duration is None and end_dt is None and start_dt:
-        # 如果用户已经指定了 duration_source 为非 default 值，不进行 AI 估计
-        if _duration_source != "user_exact":
-            # 使用默认时长
-            duration = 60
-            _duration_source = "default"
-            duration_confidence = 0.5
-        else:
-            # 获取用户最近的事件用于学习
-            recent_events = await db_service.get_events(user_id, limit=10)
+        # 获取用户最近的事件用于学习
+        recent_events = await db_service.get_events(user_id, limit=10)
 
-            # AI估计时长
-            estimate = await duration_estimator_agent.estimate(
-                event_title=title,
-                event_description=description,
-                user_id=user_id,
-                recent_events=recent_events
-            )
+        # AI估计时长
+        estimate = await duration_estimator_agent.estimate(
+            event_title=title,
+            event_description=description,
+            user_id=user_id,
+            recent_events=recent_events
+        )
 
-            duration = estimate.duration
-            _duration_source = estimate.source
-            duration_confidence = estimate.confidence
+        duration = estimate.duration
+        duration_source = estimate.source
+        duration_confidence = estimate.confidence
 
         # 计算结束时间
         end_dt = start_dt + timedelta(minutes=duration)
@@ -876,18 +883,16 @@ async def tool_create_event(
     # 如果提供了结束时间但没提供时长，计算时长
     elif duration is None and end_dt and start_dt:
         duration = int((end_dt - start_dt).total_seconds() / 60)
-        _duration_source = "user_exact"
+        duration_source = "user_exact"
         duration_confidence = 1.0
 
     # 如果提供了时长但没提供结束时间，计算结束时间
     elif duration and end_dt is None and start_dt:
         end_dt = start_dt + timedelta(minutes=duration)
-        if _duration_source == "user_exact":
-            _duration_source = "user_exact"
-        elif _duration_source == "default":
-            _duration_source = "user_exact"
-            duration_confidence = 1.0
+        duration_source = "user_exact"
+        duration_confidence = 1.0
 
+    # 构建事件数据（只包含数据库支持的字段）
     event_data = {
         "user_id": user_id,
         "title": title,
@@ -895,13 +900,15 @@ async def tool_create_event(
         "start_time": start_dt,
         "end_time": end_dt,
         "duration": duration,
-        "duration_source": _duration_source,
-        "duration_confidence": duration_confidence,
-        "ai_original_estimate": ai_original_estimate,
-        "display_mode": "flexible",  # 默认柔性显示
+        # 以下字段会被db.py过滤掉，但保留用于AI决策和显示
+        # "duration_source": duration_source,
+        # "duration_confidence": duration_confidence,
+        # "display_mode": "flexible",
         "energy_required": energy_required,
+        # AI决策字段（agent内部使用）
         "urgency": urgency,
         "importance": importance,
+        # 事件分类
         "event_type": EventType.SCHEDULE.value if start_dt else EventType.FLOATING.value,
         "category": category,
         "location": location,
@@ -909,6 +916,7 @@ async def tool_create_event(
         "participants": [],
         "status": EventStatus.PENDING.value,
         "created_by": "agent",
+        # 自动判断是否为深度工作
         "is_deep_work": category == "STUDY" or category == "WORK"
     }
 
@@ -916,9 +924,9 @@ async def tool_create_event(
 
     # 返回消息，根据时长来源显示不同信息
     message = f"已创建事件：{title}"
-    if _duration_source == "ai_estimate" and duration_confidence < 0.7:
+    if duration_source == "ai_estimate" and duration_confidence < 0.7:
         message += f"（时长约{duration}分钟，AI估计）"
-    elif _duration_source == "ai_estimate":
+    elif duration_source == "ai_estimate":
         message += f"（约{duration}分钟）"
     elif duration:
         message += f"（{duration}分钟）"
@@ -984,7 +992,10 @@ async def tool_update_event(
     title: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
-    status: Optional[str] = None
+    status: Optional[str] = None,
+    frequency: Optional[str] = None,
+    days: Optional[List[int]] = None,
+    is_flexible: Optional[bool] = None
 ) -> Dict[str, Any]:
     """更新事件"""
     update_data = {}
@@ -996,6 +1007,48 @@ async def tool_update_event(
         update_data["end_time"] = datetime.fromisoformat(end_time)
     if status:
         update_data["status"] = status
+    if is_flexible is not None:
+        update_data["is_flexible"] = is_flexible
+
+    # Handle recurrence update
+    if frequency or days is not None:
+        # Fetch current event to merge recurrence rule
+        current_event = await db_service.get_event(event_id, user_id)
+        if current_event:
+            # 1. Update Legacy repeat_rule
+            repeat_rule = current_event.get("repeat_rule") or {}
+            if not isinstance(repeat_rule, dict):
+                repeat_rule = {}
+            
+            if frequency:
+                repeat_rule["frequency"] = frequency
+            if days is not None:
+                repeat_rule["days"] = days
+            
+            update_data["repeat_rule"] = repeat_rule
+
+            # 2. Update Modern repeat_pattern
+            # Try to get existing pattern or create new
+            repeat_pattern = current_event.get("repeat_pattern") or {}
+            if not isinstance(repeat_pattern, dict):
+                repeat_pattern = {}
+            
+            # If creating fresh or switching type
+            if frequency:
+                repeat_pattern["type"] = frequency
+            
+            # If days provided, update weekdays
+            if days is not None:
+                repeat_pattern["weekdays"] = days
+            
+            # Preserve existing 'time' from pattern if not provided (tools doesn't expose time update yet here)
+            # If frequency changed to 'daily', weekdays might need clearing if logic demands, but for safety:
+            if frequency == "daily":
+                repeat_pattern["weekdays"] = None
+            elif frequency == "weekly" and days is not None:
+                repeat_pattern["weekdays"] = days
+
+            update_data["repeat_pattern"] = repeat_pattern
 
     updated_event = await db_service.update_event(event_id, user_id, update_data)
 
@@ -1331,10 +1384,48 @@ async def tool_create_routine(
     """
     from app.services.db import db_service
 
-    # Build repeat_rule
+    # Build repeat_rule (Legacy)
     repeat_rule = {"frequency": frequency}
     if days:
         repeat_rule["days"] = days
+    
+    # Build repeat_pattern (Modern - for Frontend Virtual Expansion)
+    # Map frequency to repeat_pattern type
+    pattern_type = frequency
+    pattern_weekdays = days
+    pattern_time = None
+    
+    if preferred_time_slots and len(preferred_time_slots) > 0:
+        # Extract time from first preferred slot as a default reference
+        # Format: "18:00"
+        pattern_time = preferred_time_slots[0].get("start")
+
+    repeat_pattern = {
+        "type": pattern_type,
+        "weekdays": pattern_weekdays,
+        "time": pattern_time
+    }
+
+    # Set event_date to today (Start Date of the routine)
+    # Use datetime instead of date to match DB schema
+    event_date = datetime.utcnow()
+
+    # Determine time_period
+    # Default to ANYTIME, or infer from preferred_time_slots if available
+    time_period = "ANYTIME"
+    if preferred_time_slots and len(preferred_time_slots) > 0:
+        start_t = preferred_time_slots[0].get("start", "")
+        if start_t:
+            try:
+                hour = int(start_t.split(':')[0])
+                if 6 <= hour < 12:
+                    time_period = "MORNING"
+                elif 12 <= hour < 18:
+                    time_period = "AFTERNOON"
+                else:
+                    time_period = "NIGHT"
+            except:
+                pass
 
     routine = await db_service.create_routine(
         user_id=user_id,
@@ -1345,7 +1436,12 @@ async def tool_create_routine(
         preferred_time_slots=preferred_time_slots,
         makeup_strategy=makeup_strategy,
         category=category,
-        duration=duration
+        duration=duration,
+        # Pass modern fields via kwargs
+        repeat_pattern=repeat_pattern,
+        event_date=event_date,
+        time_period=time_period,
+        is_template=True # Mark as template for virtual expansion
     )
 
     return {
@@ -1541,15 +1637,20 @@ async def tool_create_routine_template(
     is_flexible: bool = True
 ) -> Dict[str, Any]:
     """
-    创建长期日程（Routine）- 统一创建接口
+    创建长期日程（Routine/Habit）
 
-    支持序列循环，同时写入 routine_templates 表（新架构）和 events 表（兼容旧查询）。
+    注意：当前版本只使用 events 表（前端 iOS 可见的 HABIT 类型事件）。
+    routine_* 三层架构表暂未在前端实现，因此不写入新架构。
 
     示例：
-    - "每周一到五健身，训练顺序是胸肩背循环"
-      → frequency="weekly", days=[0,1,2,3,4], sequence=["胸", "肩", "背"]
+    - "每周一到五健身" → frequency="weekly", days=[0,1,2,3,4], time="18:00"
+    - "每天阅读30分钟" → frequency="daily", time="20:00"
+
+    TODO: 当前端添加 Routine 模型支持后，可以启用三层架构：
+    - RoutineTemplate（规则层）
+    - RoutineInstance（实例层）
+    - RoutineExecution（执行层）
     """
-    from app.services.routine_service import routine_service
     from app.services.db import db_service
 
     # 构建重复规则
@@ -1559,52 +1660,30 @@ async def tool_create_routine_template(
     if time:
         repeat_rule["time"] = time
 
-    # 1. 创建 routine_templates 表记录（新架构）
-    template = routine_service.create_template(
-        user_id=user_id,
-        name=name,
-        description=description,
-        category=category,
-        repeat_rule=repeat_rule,
-        sequence=sequence,
-        is_flexible=is_flexible
-    )
-
-    # 2. 同时在 events 表中创建 HABIT 记录（兼容旧查询）
-    await db_service.create_routine(
+    # 在 events 表中创建 HABIT 记录（iOS 前端可识别）
+    created_event = await db_service.create_routine(
         user_id=user_id,
         title=name,
         description=description,
         repeat_rule=repeat_rule,
         is_flexible=is_flexible,
-        category=category or "LIFE",
-        parent_routine_id=template.id  # 关联到新模板
+        category=category or "LIFE"
     )
 
-    # 3. 预生成未来 30 天的实例
-    from datetime import datetime, timedelta
-    end_date = (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d")
-    start_date = datetime.now().strftime("%Y-%m-%d")
-
-    instances = routine_service.generate_instances(
-        template_id=template.id,
-        start_date=start_date,
-        end_date=end_date
-    )
-
-    result = template.to_dict()
-    result["sequence_info"] = {
-        "has_sequence": sequence is not None,
-        "sequence_length": len(sequence) if sequence else 0,
-        "current_position": 0,
-        "next_item": sequence[0] if sequence else None
-    }
+    # TODO: 未来可在此处添加 sequence 序列逻辑的支持
+    # 当前 version 在 events 表的 repeat_rule 中不支持序列
+    sequence_info = None
+    if sequence:
+        sequence_info = {
+            "note": "序列功能暂未实现，将在 routine_templates 表启用后支持",
+            "proposed_sequence": sequence
+        }
 
     return {
         "success": True,
-        "template": result,
-        "instances_generated": len(instances),
-        "message": f"[ROUTINE] 已创建长期日程：{name}" + (f"，序列：{' → '.join(sequence)}" if sequence else "") + f"，已生成未来30天的{len(instances)}个实例"
+        "event": created_event,
+        "sequence_info": sequence_info,
+        "message": f"已创建长期日程：{name}（{frequency}）" + (f"，时间：{time}" if time else "")
     }
 
 
@@ -1651,102 +1730,47 @@ async def tool_handle_routine_instance(
     """
     操作 Routine 实例（取消、延期、完成等）
 
-    关键：通过 advance_sequence 控制序列是否前进
-    - 取消某次训练：advance_sequence=False，下次还是同样的内容
-    - 完成某次训练：advance_sequence=True，下次是序列中的下一个
+    ⚠️ 暂时禁用：当前版本使用 events 表的 HABIT 类型，
+    不使用 routine_* 三层架构。请使用 update_event 工具操作 HABIT 事件。
+
+    TODO: 当前端添加 Routine 模型支持后，可以启用此工具。
     """
-    from app.services.routine_service import routine_service
-
-    # 映射 action
-    action_map = {
-        "cancel": "cancelled",
-        "complete": "completed",
-        "reschedule": "rescheduled",
-        "skip": "skipped"
+    return {
+        "success": False,
+        "error": "TOOL_DISABLED",
+        "message": "Routine 实例操作暂未实现。请使用 update_event 工具操作 HABIT 类型的长期日程事件。"
     }
-
-    execution_action = action_map.get(action, action)
-
-    # 记录执行
-    execution = routine_service.record_execution(
-        instance_id=instance_id,
-        action=execution_action,
-        reason=reason,
-        notes=notes,
-        actual_date=actual_date,
-        sequence_advanced=advance_sequence
-    )
-
-    # 获取实例详情
-    instance = routine_service.get_instance(instance_id)
-
-    result = {
-        "success": True,
-        "action": action,
-        "execution": execution.to_dict(),
-        "sequence_advanced": advance_sequence
-    }
-
-    if instance:
-        result["instance"] = instance.to_dict()
-        result["message"] = f"[ROUTINE] 已{action}：{instance.template.name} ({instance.scheduled_date})"
-
-        if not advance_sequence and instance.sequence_item:
-            result["message"] += f"，序列未前进，下次还是{instance.sequence_item}"
-
-    return result
 
 
 async def tool_list_routine_templates(
     user_id: str,
     active_only: bool = True
 ) -> Dict[str, Any]:
-    """列出用户的所有 Routine 模板"""
-    from app.services.routine_service import routine_service
+    """
+    列出用户的所有 Routine 模板
 
-    templates = routine_service.list_templates(
-        user_id=user_id,
-        active_only=active_only
-    )
+    ⚠️ 暂时禁用：当前版本使用 events 表的 HABIT 类型，
+    不使用 routine_* 三层架构。请使用 query_events 工具筛选 HABIT 类型。
 
-    result_templates = []
-    for t in templates:
-        t_dict = t.to_dict()
-        # 添加序列信息
-        if t.sequence:
-            next_item = t.sequence[t.sequence_position % len(t.sequence)]
-            t_dict["next_sequence_item"] = next_item
-        result_templates.append(t_dict)
-
+    TODO: 当前端添加 Routine 模型支持后，可以启用此工具。
+    """
     return {
-        "success": True,
-        "templates": result_templates,
-        "count": len(templates),
-        "message": f"[ROUTINE] 找到 {len(templates)} 个长期日程模板"
+        "success": False,
+        "error": "TOOL_DISABLED",
+        "message": "Routine 模板列表暂未实现。请使用 query_events 工具并筛选 event_type='HABIT' 查看长期日程。"
     }
 
 
 async def tool_get_routine_instance_detail(instance_id: str) -> Dict[str, Any]:
-    """获取 Routine 实例详情"""
-    from app.services.routine_service import routine_service
+    """
+    获取 Routine 实例详情
 
-    instance = routine_service.get_instance(instance_id)
-    if not instance:
-        return {
-            "success": False,
-            "error": "Instance not found"
-        }
-
-    # 获取执行历史
-    executions = routine_service.get_executions(instance_id)
-
+    ⚠️ 暂时禁用：当前版本使用 events 表的 HABIT 类型。
+    """
     return {
-        "success": True,
-        "instance": instance.to_dict(),
-        "template": instance.template.to_dict(),
-        "executions": [e.to_dict() for e in executions],
-        "execution_count": len(executions),
-        "message": f"[ROUTINE] 实例详情：{instance.template.name} ({instance.scheduled_date}) - {instance.sequence_item or '常规'}"
+        "success": False,
+        "error": "TOOL_DISABLED",
+        "message": "Routine 实例详情暂未实现。请使用 query_events 工具查询事件详情。"
     }
 
 
