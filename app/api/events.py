@@ -448,6 +448,31 @@ async def complete_event(
     return EventResponse(**result)
 
 
+@router.post("/events/{event_id}/uncomplete", response_model=EventResponse)
+async def uncomplete_event(
+    event_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """Mark a completed event as pending (undo complete)"""
+    # Check if event exists
+    existing = await db_service.get_event(event_id=event_id, user_id=user_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    result = await db_service.update_event(
+        event_id=event_id,
+        user_id=user_id,
+        update_data={
+            "status": EventStatus.PENDING.value,
+            "completed_at": None
+        }
+    )
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Failed to uncomplete event")
+
+    return EventResponse(**result)
+
 @router.post("/events/{event_id}/instances", response_model=EventResponse, status_code=201)
 async def create_event_instance(
     event_id: str,

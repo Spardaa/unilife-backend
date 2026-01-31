@@ -1,48 +1,21 @@
 """
-User Profile Model - 用户画像模型
-存储从事件中学习到的用户信息
+User Profile Model - 用户画像模型 (简化版)
+存储用户的核心偏好和显式规则
 """
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from pydantic import BaseModel, Field
 import uuid
 
-from app.models.event import ExtractedPoint
-
-
-class RelationshipProfile(BaseModel):
-    """关系状态画像"""
-    status: List[str] = Field(default_factory=list, description="关系状态列表，可包含: single, has_friends, dating, married, has_family, complicated, unknown")
-    confidence: float = Field(default=0.0, ge=0, le=1, description="整体置信度")
-
-
-class IdentityProfile(BaseModel):
-    """用户身份画像"""
-    occupation: str = Field(default="unknown", description="职业")
-    industry: str = Field(default="unknown", description="行业")
-    position: str = Field(default="unknown", description="职位级别")
-    confidence: float = Field(default=0.0, ge=0, le=1, description="置信度")
-    evidence_count: int = Field(default=0, description="支持证据数量")
-
-
-class PreferenceProfile(BaseModel):
-    """个人喜好画像"""
-    activity_types: List[str] = Field(default_factory=list, description="喜欢的活动类型")
-    social_preference: str = Field(default="unknown", description="introverted | extroverted | balanced | unknown")
-    work_style: str = Field(default="unknown", description="deep_work | collaborative | flexible | unknown")
-    stress_coping: str = Field(default="unknown", description="如何应对压力")
-
-
-class HabitProfile(BaseModel):
-    """个人习惯画像"""
-    sleep_schedule: str = Field(default="unknown", description="early_bird | night_owl | irregular | unknown")
-    work_hours: str = Field(default="unknown", description="9-5 | flexible | irregular | unknown")
-    exercise_frequency: str = Field(default="unknown", description="daily | weekly | rarely | unknown")
-    meal_patterns: List[str] = Field(default_factory=list, description="饮食模式")
-
 
 class UserProfile(BaseModel):
-    """用户画像（汇总）"""
+    """用户画像（简化版）
+    
+    保留核心功能：
+    - 用户偏好字典（简单键值对）
+    - 用户显式规则列表
+    - 学习到的模式统计
+    """
 
     # Primary key
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Profile ID")
@@ -50,40 +23,46 @@ class UserProfile(BaseModel):
     # User reference
     user_id: str = Field(..., description="User ID")
 
-    # 四大画像类型
-    relationships: RelationshipProfile = Field(default_factory=RelationshipProfile)
-    identity: IdentityProfile = Field(default_factory=IdentityProfile)
-    preferences: PreferenceProfile = Field(default_factory=PreferenceProfile)
-    habits: HabitProfile = Field(default_factory=HabitProfile)
+    # 简化的偏好存储（替代4个子模型）
+    preferences: Dict[str, Any] = Field(
+        default_factory=lambda: {
+            "conflict_strategy": "ask",  # ask / prioritize_urgent / merge
+            "time_style": "flexible",    # flexible / structured
+        },
+        description="用户偏好字典"
+    )
+
+    # 用户显式表达的规则（如"周五晚上不安排工作"）
+    explicit_rules: List[str] = Field(
+        default_factory=list,
+        description="用户显式规则列表"
+    )
+
+    # 学习到的模式统计
+    learned_patterns: Dict[str, float] = Field(
+        default_factory=dict,
+        description="行为模式统计，如 {'prefers_morning_meetings': 0.8}"
+    )
 
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow, description="创建时间")
     updated_at: datetime = Field(default_factory=datetime.utcnow, description="更新时间")
-    total_points: int = Field(default=0, description="累计提取的点数")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "user_id": "user-123",
-                "relationships": {
-                    "status": ["has_friends", "dating"],
-                    "confidence": 0.9
-                },
-                "identity": {
-                    "occupation": "程序员",
-                    "industry": "IT",
-                    "position": "senior",
-                    "confidence": 0.9
-                },
                 "preferences": {
-                    "activity_types": ["编程", "阅读", "游戏"],
-                    "social_preference": "introverted",
-                    "work_style": "deep_work"
+                    "conflict_strategy": "merge",
+                    "time_style": "flexible"
                 },
-                "habits": {
-                    "sleep_schedule": "night_owl",
-                    "work_hours": "flexible",
-                    "exercise_frequency": "weekly"
+                "explicit_rules": [
+                    "周五晚上不安排工作",
+                    "早上9点前不开会"
+                ],
+                "learned_patterns": {
+                    "prefers_afternoon_work": 0.7,
+                    "cancels_when_tired": 0.6
                 }
             }
         }
@@ -95,95 +74,52 @@ class UserProfile(BaseModel):
     @classmethod
     def from_dict(cls, data: dict) -> "UserProfile":
         """从字典创建"""
+        # 兼容旧格式
+        if "relationships" in data or "identity" in data:
+            # 从旧格式迁移
+            return cls(
+                user_id=data.get("user_id", ""),
+                preferences={"conflict_strategy": "ask", "time_style": "flexible"},
+                explicit_rules=[],
+                learned_patterns={}
+            )
         return cls(**data)
 
-    def update_from_points(self, points: List[Dict[str, Any]]):
-        """从提取的画像点更新"""
-        from app.models.event import ExtractedPoint
-
-        for point_data in points:
-            point = ExtractedPoint(**point_data)
-            point_type = point.type
-
-            # 根据类型更新相应字段
-            if point_type == "relationship":
-                self._update_relationship(point)
-            elif point_type == "identity":
-                self._update_identity(point)
-            elif point_type == "preference":
-                self._update_preferences(point)
-            elif point_type == "habit":
-                self._update_habits(point)
-
-            self.total_points += 1
-
+    def update_preference(self, key: str, value: Any):
+        """更新单个偏好"""
+        self.preferences[key] = value
         self.updated_at = datetime.utcnow()
 
-    def _update_relationship(self, point: ExtractedPoint):
-        """更新关系状态"""
-        # 简单策略：如果新点置信度更高，更新状态列表
-        if point.confidence > self.relationships.confidence:
-            self.relationships.confidence = point.confidence
-            # 从 content 提取 status
-            content_lower = point.content.lower()
-            new_statuses = []
-            if "单身" in content_lower or "single" in content_lower:
-                new_statuses.append("single")
-            if "约会" in content_lower or "dating" in content_lower or "恋人" in content_lower:
-                new_statuses.append("dating")
-            if "已婚" in content_lower or "结婚" in content_lower:
-                new_statuses.append("married")
-            if "朋友" in content_lower or "friend" in content_lower:
-                new_statuses.append("has_friends")
-            if "家人" in content_lower or "family" in content_lower or "父母" in content_lower or "parent" in content_lower:
-                new_statuses.append("has_family")
+    def add_explicit_rule(self, rule: str):
+        """添加显式规则"""
+        if rule and rule not in self.explicit_rules:
+            self.explicit_rules.append(rule)
+            self.updated_at = datetime.utcnow()
 
-            # 合并状态（去重）
-            for s in new_statuses:
-                if s not in self.relationships.status:
-                    self.relationships.status.append(s)
+    def remove_explicit_rule(self, rule: str):
+        """移除显式规则"""
+        if rule in self.explicit_rules:
+            self.explicit_rules.remove(rule)
+            self.updated_at = datetime.utcnow()
 
-    def _update_identity(self, point: ExtractedPoint):
-        """更新用户身份"""
-        if point.confidence > self.identity.confidence:
-            self.identity.confidence = point.confidence
+    def update_pattern(self, pattern_name: str, confidence: float):
+        """更新学习模式的置信度"""
+        # 加权平均：新值占30%，旧值占70%
+        old_value = self.learned_patterns.get(pattern_name, 0.5)
+        new_value = old_value * 0.7 + confidence * 0.3
+        self.learned_patterns[pattern_name] = round(new_value, 2)
+        self.updated_at = datetime.utcnow()
 
-        # 从 content 提取信息
-        content = point.content
-        if "程序员" in content or "编程" in content or "代码" in content:
-            self.identity.occupation = "程序员"
-            self.identity.industry = "IT"
-        elif "学生" in content:
-            self.identity.occupation = "学生"
-        # ... 更多职业识别
-
-        self.identity.evidence_count += 1
-
-    def _update_preferences(self, point: ExtractedPoint):
-        """更新个人喜好"""
-        # 从 content 提取活动类型
-        for activity in ["运动", "阅读", "游戏", "音乐", "电影", "旅行", "美食", "健身"]:
-            if activity in point.content and activity not in self.preferences.activity_types:
-                self.preferences.activity_types.append(activity)
-
-        # 社交倾向
-        if "内向" in point.content or "独处" in point.content:
-            self.preferences.social_preference = "introverted"
-        elif "外向" in point.content or "社交" in point.content:
-            self.preferences.social_preference = "extroverted"
-
-    def _update_habits(self, point: ExtractedPoint):
-        """更新个人习惯"""
-        content = point.content
-
-        if "早起" in content or "早" in content:
-            self.habits.sleep_schedule = "early_bird"
-        elif "晚" in content or "夜" in content:
-            self.habits.sleep_schedule = "night_owl"
-
-        if "每天" in content:
-            if "运动" in content or "锻炼" in content:
-                self.habits.exercise_frequency = "daily"
-        elif "每周" in content:
-            if "运动" in content or "锻炼" in content:
-                self.habits.exercise_frequency = "weekly"
+    def get_summary(self) -> Dict[str, Any]:
+        """获取摘要（用于注入 Agent）"""
+        return {
+            "conflict_strategy": self.preferences.get("conflict_strategy", "ask"),
+            "explicit_rules": self.explicit_rules[:5],  # 最多5条规则
+            "top_patterns": dict(
+                sorted(
+                    self.learned_patterns.items(),
+                    key=lambda x: x[1],
+                    reverse=True
+                )[:3]  # 最多3个高置信度模式
+            )
+        }

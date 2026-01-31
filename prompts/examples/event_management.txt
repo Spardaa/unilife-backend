@@ -1,37 +1,70 @@
-# 事件管理样例
+# 事件管理流程样例 (Flow Examples)
 
-## 创建事件
-用户："明天下午3点开会"
-→ create_event
-→ 回复："✓ 已安排：明天下午3点开会（约1小时）"
+此文档展示了 Executor (Internal) 和 Persona (External) 的协作流。
 
-## 查询事件（单个）
-用户："明天有什么安排"
-→ query_events 返回 1 个事件
-→ 回复："✓ 明天下午3点有团队周会"
+## 场景 1: 创建事件 (Create)
+**User**: "明天下午3点开会"
 
-## 查询事件（2-3个）
-用户："明天有什么安排"
-→ query_events 返回 3 个事件
-→ 回复："明天有 3 个安排：14:00-15:00 团队周会 ⭐，09:00-10:00 健身，20:00-21:00 阅读"
+**Router**: `intent=CREATE_EVENT`, `routing=EXECUTOR`
 
-## 查询事件（多个）
-用户："明天有什么安排"
-→ query_events 返回 6 个事件
-→ 回复："明天有 6 个安排，重点是下午2点的团队周会"
+**Executor (Internal Report)**:
+```
+[执行结果] 已创建"会议"
+- 时间: 明天 15:00 (根据用户指令)
+- 时长: 60分钟 (默认)
+```
 
-## 修改事件
-用户："把会议改到下午4点"
-→ update_event
-→ 回复："✓ 已调整：会议改成下午4点"
+**Persona (External Reply)**:
+"OK，会议安排好了，明天下午3点，预留了1小时。"
 
-## 删除事件（单个，无确认）
-用户："把明天的会议删了"
-→ query_events 只有 1 个会议
-→ delete_event
-→ 回复："✓ 已删除：明天的团队周会"
+---
 
-## 模糊查询
-用户："查一下明天的会议"
-→ query_events 找到多个会议
-→ 回复："你问的是明天下午3点的团队周会吗？（明天还有早上的站立会）"
+## 场景 2: 查询事件 (Query)
+**User**: "明天有什么安排"
+
+**Router**: `intent=QUERY_EVENT`, `routing=EXECUTOR`
+
+**Executor (Internal Report)**:
+```
+[执行结果] 找到 3 个事件
+1. 09:00-10:00 健身 (Health)
+2. 14:00-15:00 团队周会 (Work)
+3. 20:00-21:00 阅读 (Life)
+```
+
+**Persona (External Reply)**:
+"明天有3个主要安排：
+早起9点去健身，下午2点是团队周会，晚上8点留给了阅读时间。还挺充实的！"
+
+---
+
+## 场景 3: 时间冲突 (Conflict)
+**User**: "把会议改到下午2点"
+
+**Router**: `intent=UPDATE_EVENT`, `routing=EXECUTOR`
+
+**Executor (Internal Report)**:
+```
+[发现冲突] 14:00 已有"客户拜访"
+- 冲突类型: Hard Conflict
+- 建议: 改到 16:00
+```
+
+**Persona (External Reply)**:
+"下午2点好像不行，那时候已经安排了'客户拜访'。要不改到4点？那时候有空。"
+
+---
+
+## 场景 4: 批量操作 (Batch)
+**User**: "生病了，把今天的会都推掉"
+
+**Router**: `intent=DELETE_EVENT`, `routing=BOTH` (操作+情感)
+
+**Executor (Internal Report)**:
+```
+[执行结果] 已取消/推迟今日所有会议 (3个)
+- 备注: 因健康原因
+```
+
+**Persona (External Reply)**:
+"已经帮你把今天的3个会议都推掉了。生病了就别操心工作了，快去休息，早日康复！"

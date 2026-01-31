@@ -148,11 +148,35 @@ async def chat(request: ChatRequest):
                 for s in suggestions
             ]
 
+        # Convert query_results to schema format
+        query_results = result.get("query_results")
+        query_result_responses = None
+        if query_results:
+            from app.schemas.chat import QueryResult, QueryStats
+            query_result_responses = []
+            for qr in query_results:
+                stats = None
+                if qr.get("statistics"):
+                    stats = QueryStats(
+                        total=qr["statistics"].get("total"),
+                        pending=qr["statistics"].get("pending"),
+                        completed=qr["statistics"].get("completed")
+                    )
+                query_result_responses.append(
+                    QueryResult(
+                        type=qr.get("type", "events"),
+                        events=qr.get("events"),
+                        statistics=stats,
+                        count=qr.get("count")
+                    )
+                )
+
         return ChatResponse(
             reply=reply,
             actions=action_responses,
             snapshot_id=snapshot_id,
             suggestions=suggestion_responses,
+            query_results=query_result_responses,
             conversation_id=conversation_id  # 返回对话ID，前端下次请求时带上
         )
 

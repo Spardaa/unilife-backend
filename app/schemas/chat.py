@@ -35,12 +35,28 @@ class Suggestion(BaseModel):
     probability: Optional[int] = Field(None, description="AI predicted probability (0-100) that user will choose this option")
 
 
+class QueryStats(BaseModel):
+    """Statistics from query results"""
+    total: Optional[int] = Field(None, description="Total count")
+    pending: Optional[int] = Field(None, description="Pending count")
+    completed: Optional[int] = Field(None, description="Completed count")
+
+
+class QueryResult(BaseModel):
+    """Structured query result for frontend rendering"""
+    type: str = Field(..., description="Result type: events, schedule_overview, statistics, routine")
+    events: Optional[List[Dict[str, Any]]] = Field(None, description="List of events if type is 'events'")
+    statistics: Optional[QueryStats] = Field(None, description="Statistics data")
+    count: Optional[int] = Field(None, description="Total count of results")
+
+
 class ChatResponse(BaseModel):
     """Response model for chat endpoint"""
     reply: str = Field(..., description="Agent's natural language response")
     actions: List[ActionResult] = Field(default_factory=list, description="Actions taken by agent")
     snapshot_id: Optional[str] = Field(None, description="Snapshot ID if changes were made")
     suggestions: Optional[List[Suggestion]] = Field(None, description="Interactive suggestions for user to select")
+    query_results: Optional[List[QueryResult]] = Field(None, description="Structured query results for UI rendering")
     conversation_id: Optional[str] = Field(None, description="Conversation ID for continuing this conversation")
 
     # Smart decision fields

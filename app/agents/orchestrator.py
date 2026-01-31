@@ -154,11 +154,17 @@ class AgentOrchestrator:
             final_reply = persona_response.content
 
             # 5. 构建返回结果
+            # 提取 query_results（从 Executor 的 metadata 中）
+            query_results = None
+            if executor_response and executor_response.metadata:
+                query_results = executor_response.metadata.get("query_results", [])
+
             result = {
                 "reply": final_reply,
                 "actions": actions if routing_decision != RoutingDecision.PERSONA else [],
                 "tool_calls": tool_calls if routing_decision != RoutingDecision.PERSONA else [],
                 "suggestions": suggestions,
+                "query_results": query_results,  # 新增：结构化查询结果
                 "routing_metadata": {
                     "intent": router_response.metadata.get("intent"),
                     "routing": routing_decision.value,
@@ -273,8 +279,10 @@ class AgentOrchestrator:
             user_decision_profile = None
 
         # 构建上下文
-        # 获取当前时间（用户本地时间）
-        now = datetime.utcnow()
+        # 获取当前时间（用户本地时间，默认使用Asia/Shanghai时区）
+        import pytz
+        user_tz = pytz.timezone("Asia/Shanghai")  # TODO: 从用户profile获取时区
+        now = datetime.now(user_tz)
         current_hour = now.hour
 
         # 判断当前时段
@@ -294,9 +302,13 @@ class AgentOrchestrator:
         else:  # 23-24
             time_period = "深夜"
 
-        # 构建带时段信息的时间字符串
+        # 星期映射
+        weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        weekday_name = weekday_names[now.weekday()]
+
+        # 构建带时段和星期信息的时间字符串（使用本地时间）
         current_time_str = current_time or now.strftime("%Y-%m-%d %H:%M:%S")
-        current_time_with_period = f"{current_time_str} ({time_period}, {current_hour}点)"
+        current_time_with_period = f"{current_time_str} ({weekday_name}, {time_period}, {current_hour}点)"
 
         context = ConversationContext(
             user_id=user_id,

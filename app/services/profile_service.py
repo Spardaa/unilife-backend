@@ -1,5 +1,5 @@
 """
-User Profile Service - 用户画像服务
+User Profile Service - 用户画像服务 (简化版)
 管理用户画像的存储、聚合和查询
 """
 from typing import Dict, Any, List, Optional
@@ -9,12 +9,11 @@ from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker, Session
 
 from app.models.user_profile import UserProfile
-from app.models.event import ExtractedPoint
 from app.config import settings
 
 
 class UserProfileService:
-    """用户画像服务"""
+    """用户画像服务（简化版）"""
 
     def __init__(self, db_path: str = None):
         if db_path is None:
@@ -41,30 +40,23 @@ class UserProfileService:
         """获取或创建用户画像"""
         db = self.get_session()
         try:
-            # 尝试从数据库读取（使用原生SQL）
             result = db.execute(
                 text("""SELECT profile_data FROM user_profiles WHERE user_id = :user_id"""),
                 {"user_id": user_id}
             ).fetchone()
 
             if result:
-                profile_data = result[0]
                 import json
-                return UserProfile.from_dict(json.loads(profile_data))
+                return UserProfile.from_dict(json.loads(result[0]))
             else:
-                # 创建新画像
                 profile = UserProfile(user_id=user_id)
                 self.save_profile(user_id, profile)
                 return profile
 
         except Exception as e:
-            # 表不存在或其他数据库错误
             if "no such table" in str(e) or "user_profiles" in str(e):
-                # 表不存在，返回默认画像（静默处理）
                 return UserProfile(user_id=user_id)
-            else:
-                # 其他错误，仍然抛出
-                raise e
+            raise e
         finally:
             db.close()
 
@@ -73,17 +65,14 @@ class UserProfileService:
         db = self.get_session()
         try:
             import json
-
             profile_data = json.dumps(profile.to_dict())
 
-            # 检查是否存在
             exists = db.execute(
                 text("""SELECT id FROM user_profiles WHERE user_id = :user_id"""),
                 {"user_id": user_id}
             ).fetchone()
 
             if exists:
-                # 更新
                 db.execute(
                     text("""UPDATE user_profiles SET profile_data = :profile_data, updated_at = :updated_at WHERE user_id = :user_id"""),
                     {
@@ -93,7 +82,6 @@ class UserProfileService:
                     }
                 )
             else:
-                # 插入
                 db.execute(
                     text("""INSERT INTO user_profiles (id, user_id, profile_data, created_at, updated_at) VALUES (:id, :user_id, :profile_data, :created_at, :updated_at)"""),
                     {
@@ -110,54 +98,35 @@ class UserProfileService:
 
         except Exception as e:
             db.rollback()
-            # 表不存在时静默处理，不影响核心功能
             if "no such table" in str(e) or "user_profiles" in str(e):
-                # 表不存在，静默返回 True（表示"已处理"）
                 return True
-            else:
-                # 其他错误仍然打印
-                print(f"[Profile Service] Error saving profile: {e}")
-                return False
+            print(f"[Profile Service] Error saving profile: {e}")
+            return False
         finally:
             db.close()
 
-    def add_extracted_points(
-        self,
-        user_id: str,
-        points: List[Dict[str, Any]]
-    ) -> UserProfile:
-        """添加提取的画像点，更新用户画像"""
-        profile = self.get_or_create_profile(user_id)
-        profile.update_from_points(points)
-        self.save_profile(user_id, profile)
-        return profile
-
     def get_profile_summary(self, user_id: str) -> Dict[str, Any]:
-        """获取用户画像摘要（用于展示或提供给Agent）"""
+        """获取用户画像摘要（用于注入 Agent）"""
         profile = self.get_or_create_profile(user_id)
+        return profile.get_summary()
 
-        return {
-            "user_id": user_id,
-            "relationships": {
-                "status": profile.relationships.status if isinstance(profile.relationships.status, list) else [profile.relationships.status],
-                "confidence": profile.relationships.confidence
-            },
-            "identity": {
-                "occupation": profile.identity.occupation,
-                "industry": profile.identity.industry,
-                "confidence": profile.identity.confidence
-            },
-            "preferences": {
-                "activities": profile.preferences.activity_types[:5],  # 最多显示5个
-                "social": profile.preferences.social_preference
-            },
-            "habits": {
-                "sleep": profile.habits.sleep_schedule,
-                "work_hours": profile.habits.work_hours
-            },
-            "total_points": profile.total_points,
-            "updated_at": profile.updated_at.isoformat()
-        }
+    def update_preference(self, user_id: str, key: str, value: Any) -> bool:
+        """更新单个偏好"""
+        profile = self.get_or_create_profile(user_id)
+        profile.update_preference(key, value)
+        return self.save_profile(user_id, profile)
+
+    def add_rule(self, user_id: str, rule: str) -> bool:
+        """添加显式规则"""
+        profile = self.get_or_create_profile(user_id)
+        profile.add_explicit_rule(rule)
+        return self.save_profile(user_id, profile)
+
+    def update_pattern(self, user_id: str, pattern_name: str, confidence: float) -> bool:
+        """更新学习模式"""
+        profile = self.get_or_create_profile(user_id)
+        profile.update_pattern(pattern_name, confidence)
+        return self.save_profile(user_id, profile)
 
 
 # 全局服务实例

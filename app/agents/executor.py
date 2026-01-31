@@ -3,7 +3,7 @@ Executor Agent - 理性执行者
 负责工具调用和操作执行，无情感，纯逻辑
 """
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, date
 import json
 
 from app.services.llm import llm_service
@@ -12,6 +12,16 @@ from app.agents.base import (
     BaseAgent, ConversationContext, AgentResponse, build_messages_from_context
 )
 from app.agents.tools import tool_registry
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles datetime objects"""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, date):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 class ExecutorAgent(BaseAgent):
@@ -103,7 +113,7 @@ class ExecutorAgent(BaseAgent):
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
-                        "content": json.dumps(result, ensure_ascii=False)
+                        "content": json.dumps(result, ensure_ascii=False, cls=DateTimeEncoder)
                     })
 
                 # 继续循环，让 LLM 看到工具结果后决定下一步
@@ -165,42 +175,39 @@ class ExecutorAgent(BaseAgent):
             current_time = context.current_time or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
             prompt = prompt.replace("{current_time}", current_time)
 
-            # 注入决策偏好（简化版）
+            # 注入决策偏好（简化版 - 适配新模型）
             if context.user_decision_profile:
                 decision = context.user_decision_profile
                 prompt += "\n\n## 用户决策偏好\n\n"
 
-                # 冲突解决策略
-                conflict = decision.get("conflict_resolution", {})
-                strategy = conflict.get("strategy", "ask")
+                # 冲突解决策略（新模型直接字段或兼容旧格式）
+                strategy = decision.get("conflict_strategy") or decision.get("conflict_resolution", {}).get("strategy", "ask")
                 if strategy:
                     strategy_map = {
                         "ask": "遇到冲突时询问用户",
                         "prioritize_urgent": "冲突时优先处理紧急事项",
-                        "prioritize_important": "冲突时优先处理重要事项",
                         "merge": "冲突时尝试合并事项"
                     }
                     prompt += f"- 冲突策略: {strategy_map.get(strategy, strategy)}\n"
-
-                # 会议偏好
-                meeting = decision.get("meeting_preference", {})
-                stacking = meeting.get("stacking_style", "flexible")
-                if stacking:
-                    stacking_map = {
-                        "stacked": "连续安排会议",
-                        "spaced": "分散安排会议",
-                        "flexible": "灵活安排会议"
-                    }
-                    prompt += f"- 会议风格: {stacking_map.get(stacking, stacking)}\n"
 
                 # 显式规则
                 rules = decision.get("explicit_rules", [])
                 if rules:
                     prompt += "- 用户规则:\n"
-                    for rule in rules:
+                    for rule in rules[:5]:
                         prompt += f"  - {rule}\n"
 
+                # 场景偏好（新模型 scenario_stats 或旧模型 top_scenarios）
+                scenarios = decision.get("scenario_stats", {}) or decision.get("top_scenarios", {})
+                if scenarios:
+                    prompt += "- 场景偏好:\n"
+                    for scenario, data in list(scenarios.items())[:3]:
+                        action = data.get("action", "") if isinstance(data, dict) else data
+                        if action:
+                            prompt += f"  - {scenario}: {action}\n"
+
             return prompt
+
 
     def _get_default_system_prompt(self) -> str:
         """默认系统提示词（备用）"""

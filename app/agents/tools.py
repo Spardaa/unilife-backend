@@ -2,7 +2,7 @@
 Agent Tools - Callable functions for LLM Agent
 类似 Cursor Agent 的工具系统，LLM 可以调用这些工具来操作数据库
 """
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timedelta
 from app.services.db import db_service
 from app.models.event import EventType, Category, EventStatus, EnergyLevel
@@ -62,7 +62,7 @@ def register_all_tools():
     # 1. 创建事件工具
     tool_registry.register(
         name="create_event",
-        description="创建一个新的日程事件。需要用户提供事件的标题、时间等信息。如果时间信息不完整，应该先询问用户。",
+        description="创建一个新的日程事件。支持模糊时间（如'明天下午'）。",
         parameters={
             "type": "object",
             "properties": {
@@ -80,11 +80,20 @@ def register_all_tools():
                 },
                 "start_time": {
                     "type": "string",
-                    "description": "开始时间，ISO 8601 格式，例如 2026-01-21T15:00:00（可选，不填则为浮动事件）"
+                    "description": "开始时间，ISO 8601 格式（可选，如果有具体时间）"
                 },
                 "end_time": {
                     "type": "string",
                     "description": "结束时间，ISO 8601 格式（可选）"
+                },
+                "time_period": {
+                    "type": "string",
+                    "enum": ["MORNING", "AFTERNOON", "NIGHT", "ANYTIME"],
+                    "description": "模糊时间段（可选，当没有具体开始时间时使用）"
+                },
+                "event_date": {
+                    "type": "string",
+                    "description": "事件日期，YYYY-MM-DD 或 ISO 格式（可选，配合 time_period 使用）"
                 },
                 "duration": {
                     "type": "integer",
@@ -111,6 +120,14 @@ def register_all_tools():
                 "location": {
                     "type": "string",
                     "description": "地点（可选）"
+                },
+                "is_physically_demanding": {
+                    "type": "boolean",
+                    "description": "是否需要高强度体力消耗（如健身、搬家等）"
+                },
+                "is_mentally_demanding": {
+                    "type": "boolean",
+                    "description": "是否需要高强度脑力消耗（如考试、深度工作等）"
                 }
             },
             "required": ["user_id", "title"]
@@ -196,6 +213,15 @@ def register_all_tools():
                 "end_time": {
                     "type": "string",
                     "description": "新的结束时间，ISO 8601 格式"
+                },
+                "time_period": {
+                    "type": "string",
+                    "enum": ["MORNING", "AFTERNOON", "NIGHT", "ANYTIME"],
+                    "description": "新的模糊时间段"
+                },
+                "event_date": {
+                    "type": "string",
+                    "description": "新的事件日期，YYYY-MM-DD 或 ISO 格式"
                 },
                 "status": {
                     "type": "string",
@@ -836,12 +862,17 @@ async def tool_create_event(
     description: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
+    time_period: Optional[str] = None,
+    event_date: Optional[str] = None,
     duration: Optional[int] = None,
     energy_required: str = "MEDIUM",
     urgency: int = 3,
     importance: int = 3,
     category: str = "WORK",
-    location: Optional[str] = None
+    location: Optional[str] = None,
+    # New fields for demand flags
+    is_physically_demanding: bool = False,
+    is_mentally_demanding: bool = False
 ) -> Dict[str, Any]:
     """
     创建新事件（集成AI时长估计）
@@ -855,6 +886,24 @@ async def tool_create_event(
     # 解析时间
     start_dt = datetime.fromisoformat(start_time) if start_time else None
     end_dt = datetime.fromisoformat(end_time) if end_time else None
+    
+    # 解析日期（用于配合 time_period）
+    event_dt_val = None
+    if event_date:
+        try:
+            # 尝试 ISO 格式 (YYYY-MM-DD)
+            # 如果是带时间的 ISO 格式，只取日期部分
+            if "T" in event_date:
+                event_dt_val = datetime.fromisoformat(event_date)
+            else:
+                # 假设是 YYYY-MM-DD
+                event_dt_val = datetime.strptime(event_date, "%Y-%m-%d")
+        except:
+            # 如果解析失败，尝试直接作为 datetime 解析
+            try:
+                event_dt_val = datetime.fromisoformat(event_date)
+            except:
+                pass
 
     # 时长估计逻辑（用于显示和学习，不持久化到数据库）
     duration_source = "user_exact"  # 内部追踪，不保存到数据库
@@ -880,6 +929,21 @@ async def tool_create_event(
         # 计算结束时间
         end_dt = start_dt + timedelta(minutes=duration)
 
+    # 如果 provided event_date + time_period but NO start_time, duration might still be estimated
+    elif duration is None and time_period and event_dt_val:
+         # AI 估计时长
+        recent_events = await db_service.get_events(user_id, limit=10)
+        estimate = await duration_estimator_agent.estimate(
+            event_title=title,
+            event_description=description,
+            user_id=user_id,
+            recent_events=recent_events
+        )
+        duration = estimate.duration
+        duration_source = estimate.source
+        duration_confidence = estimate.confidence
+
+
     # 如果提供了结束时间但没提供时长，计算时长
     elif duration is None and end_dt and start_dt:
         duration = int((end_dt - start_dt).total_seconds() / 60)
@@ -899,6 +963,8 @@ async def tool_create_event(
         "description": description,
         "start_time": start_dt,
         "end_time": end_dt,
+        "time_period": time_period,
+        "event_date": event_dt_val,
         "duration": duration,
         # 以下字段会被db.py过滤掉，但保留用于AI决策和显示
         # "duration_source": duration_source,
@@ -912,6 +978,8 @@ async def tool_create_event(
         "event_type": EventType.SCHEDULE.value if start_dt else EventType.FLOATING.value,
         "category": category,
         "location": location,
+        "is_physically_demanding": is_physically_demanding,
+        "is_mentally_demanding": is_mentally_demanding,
         "tags": [],
         "participants": [],
         "status": EventStatus.PENDING.value,
@@ -924,11 +992,18 @@ async def tool_create_event(
 
     # 返回消息，根据时长来源显示不同信息
     message = f"已创建事件：{title}"
+    if time_period and not start_dt:
+        period_map = {
+            "MORNING": "上午", "AFTERNOON": "下午", "NIGHT": "晚上", "ANYTIME": "随时"
+        }
+        period_str = period_map.get(time_period, time_period)
+        message += f"（{period_str}）"
+    
     if duration_source == "ai_estimate" and duration_confidence < 0.7:
         message += f"（时长约{duration}分钟，AI估计）"
     elif duration_source == "ai_estimate":
         message += f"（约{duration}分钟）"
-    elif duration:
+    elif duration and start_dt: # only show duration if it's not a fuzzy time event or if it has explicit duration
         message += f"（{duration}分钟）"
 
     return {
@@ -992,6 +1067,8 @@ async def tool_update_event(
     title: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
+    time_period: Optional[str] = None,
+    event_date: Optional[str] = None,
     status: Optional[str] = None,
     frequency: Optional[str] = None,
     days: Optional[List[int]] = None,
@@ -1005,6 +1082,22 @@ async def tool_update_event(
         update_data["start_time"] = datetime.fromisoformat(start_time)
     if end_time:
         update_data["end_time"] = datetime.fromisoformat(end_time)
+    
+    if time_period:
+        update_data["time_period"] = time_period
+    
+    if event_date:
+        try:
+            if "T" in event_date:
+                update_data["event_date"] = datetime.fromisoformat(event_date)
+            else:
+                update_data["event_date"] = datetime.strptime(event_date, "%Y-%m-%d")
+        except:
+             try:
+                 update_data["event_date"] = datetime.fromisoformat(event_date)
+             except:
+                 pass
+
     if status:
         update_data["status"] = status
     if is_flexible is not None:
@@ -1583,21 +1676,24 @@ async def tool_get_routine_stats(
 
 # ============ Time Parsing Tools ============
 
+from typing import Union, List
+
 async def tool_parse_time(
-    text: str,
+    text: Union[str, List[str]],
     reference_date: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    智能解析时间表达式
+    智能时间解析表达式
 
+    支持单个字符串或字符串列表（批量解析）。
     支持多种自然语言时间表达方式，包括精确时间、相对日期、模糊时间、时间范围等。
 
     Args:
-        text: 时间文本（如"明天下午3点"、"下周三"、"傍晚"、"本周五到周日"）
+        text: 时间文本（如"明天下午3点"）或文本列表（如["明天上午", "明天下午"]）
         reference_date: 参考日期 ISO 格式（可选，默认为当前时间）
 
     Returns:
-        解析结果，包含类型、时间、置信度、说明等信息
+        解析结果。如果是列表输入，返回 {"results": [...]}
     """
     from app.services.time_parser import parse_time_expression
     from datetime import datetime
@@ -1606,6 +1702,32 @@ async def tool_parse_time(
     if reference_date:
         ref_date = datetime.fromisoformat(reference_date)
 
+    # 批量解析模式
+    if isinstance(text, list):
+        results = []
+        success_count = 0
+        for t in text:
+            # 跳过空字符串
+            if not t or not isinstance(t, str):
+                continue
+                
+            res = parse_time_expression(t, ref_date)
+            # 添加原始文本以便对应
+            res["original_text"] = t
+            results.append(res)
+            if res["success"]:
+                success_count += 1
+        
+        return {
+            "success": True, # 只要没抛出异常就算成功，具体看results里的success
+            "is_batch": True,
+            "results": results,
+            "success_count": success_count,
+            "total_count": len(results),
+            "message": f"[TIME] 批量解析完成：{success_count}/{len(results)} 个成功"
+        }
+
+    # 单个解析模式
     result = parse_time_expression(text, ref_date)
 
     if result["success"]:
@@ -1693,17 +1815,66 @@ async def tool_get_events_with_routines(
     end_date: str
 ) -> Dict[str, Any]:
     """
-    获取事件（普通 + Routine 实例）
+    获取事件（普通 + HABIT 类型）
 
-    返回统一格式的事件列表，Routine 实例会标记 is_routine=True
+    直接从 events 表查询，HABIT 类型事件会标记 is_routine=True
     """
-    from app.services.routine_service import routine_service
+    from app.services.db import db_service
+    import pytz
 
-    events = routine_service.get_events_with_routines(
+    # 使用用户时区（默认Asia/Shanghai）
+    user_tz = pytz.timezone("Asia/Shanghai")
+
+    # Handle date parsing to ensure full coverage of the day
+    # Convert string dates to datetime objects with proper time boundaries
+    try:
+        # Parse start_date (YYYY-MM-DD or ISO)
+        if "T" in start_date:
+            start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+            # 如果是UTC时间，转换为本地时区
+            if start_dt.tzinfo is not None:
+                start_dt = start_dt.astimezone(user_tz)
+        else:
+            # 假设YYYY-MM-DD是本地时间
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            start_dt = user_tz.localize(start_dt)
+        
+        # Ensure start time is 00:00:00 in local timezone
+        start_dt = start_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Parse end_date
+        if "T" in end_date:
+            end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            if end_dt.tzinfo is not None:
+                end_dt = end_dt.astimezone(user_tz)
+        else:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+            end_dt = user_tz.localize(end_dt)
+            
+        # Ensure end time is 23:59:59 in local timezone
+        end_dt = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+    except ValueError as e:
+        print(f"Error parsing dates in tool_get_events_with_routines: {e}")
+        # Fallback to original strings if parsing fails
+        start_dt = start_date
+        end_dt = end_date
+
+    # 直接从 db_service 查询事件
+    events_result = await db_service.get_events(
         user_id=user_id,
-        start_date=start_date,
-        end_date=end_date
+        start_date=start_dt,
+        end_date=end_dt
     )
+
+    events = events_result if isinstance(events_result, list) else []
+
+    # 标记 HABIT 类型事件
+    for event in events:
+        if event.get("event_type") == "HABIT" or event.get("event_type") == "habit":
+            event["is_routine"] = True
+        else:
+            event["is_routine"] = False
 
     # 统计
     normal_count = sum(1 for e in events if not e.get("is_routine"))
