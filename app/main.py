@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.api import chat, events, users, snapshots, stats, auth, sync, devices, notifications, habits
+from app.api import chat, events, users, snapshots, stats, auth, sync, devices, notifications, habits, projects
 from app.utils.logger import init_logging, LogColors
 
 # 延迟导入后台任务调度器（Serverless 环境下不需要）
@@ -85,6 +85,7 @@ app.include_router(sync.router, prefix="/api/v1", tags=["Sync"])
 app.include_router(devices.router, prefix="/api/v1", tags=["Devices"])
 app.include_router(notifications.router, prefix="/api/v1", tags=["Notifications"])
 app.include_router(habits.router, prefix="/api/v1", tags=["Habits"])
+app.include_router(projects.router, prefix="/api/v1/projects", tags=["Projects"])
 
 
 @app.get("/")

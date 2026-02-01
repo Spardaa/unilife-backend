@@ -138,13 +138,17 @@ def register_all_tools():
     # 2. 查询事件工具
     tool_registry.register(
         name="query_events",
-        description="查询用户的日程事件。可以按日期、类别、状态等条件过滤。",
+        description="查询用户的日程事件。可以按日期、类别、状态等条件过滤。查询特定日期的日程时必须提供 event_date 参数。",
         parameters={
             "type": "object",
             "properties": {
                 "user_id": {
                     "type": "string",
                     "description": "用户ID"
+                },
+                "event_date": {
+                    "type": "string",
+                    "description": "按日期过滤（YYYY-MM-DD格式）。查询特定日期日程时必填。"
                 },
                 "category": {
                     "type": "string",
@@ -853,6 +857,190 @@ def register_all_tools():
         func=tool_analyze_schedule
     )
 
+    # ============ Project Management Tools (Life Project System) ============
+
+    # 27. 创建人生项目
+    tool_registry.register(
+        name="create_project",
+        description="创建一个新的人生项目（Life Project）。项目分为FINITE（有终点目标，如融资、考试）和INFINITE（持续习惯，如健身）两种类型。项目等级决定任务优先级：Tier 0=核心（Main Quest），Tier 1/2=成长/兴趣（Side Quest）。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "项目名称（如'考研'、'融资'、'健身计划'）"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "项目描述（可选）"
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["FINITE", "INFINITE"],
+                    "description": "项目类型：FINITE=登山型（有明确终点），INFINITE=长跑型（持续习惯）"
+                },
+                "base_tier": {
+                    "type": "integer",
+                    "enum": [0, 1, 2],
+                    "description": "优先级等级：0=核心（Main Quest），1=成长，2=兴趣（Side Quest）"
+                },
+                "energy_type": {
+                    "type": "string",
+                    "enum": ["MENTAL", "PHYSICAL", "BALANCED"],
+                    "description": "任务主要消耗类型：MENTAL=脑力，PHYSICAL=体力，BALANCED=平衡"
+                },
+                "target_kpi": {
+                    "type": "object",
+                    "description": "目标KPI（可选），如 {\"weekly_hours\": 20, \"target_date\": \"2026-12-25\"}"
+                }
+            },
+            "required": ["user_id", "title"]
+        },
+        func=tool_create_project
+    )
+
+    # 28. 获取项目列表
+    tool_registry.register(
+        name="get_projects",
+        description="获取用户的所有人生项目列表，按优先级等级排序。可用于展示项目概览或选择项目。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "active_only": {
+                    "type": "boolean",
+                    "description": "是否只返回活跃项目（默认True）"
+                },
+                "include_stats": {
+                    "type": "boolean",
+                    "description": "是否包含任务统计（默认False）"
+                }
+            },
+            "required": ["user_id"]
+        },
+        func=tool_get_projects
+    )
+
+    # 29. 更新项目
+    tool_registry.register(
+        name="update_project",
+        description="更新项目信息，如标题、描述、优先级等级等。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "项目ID"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "新标题（可选）"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "新描述（可选）"
+                },
+                "base_tier": {
+                    "type": "integer",
+                    "description": "新优先级等级（可选）"
+                },
+                "target_kpi": {
+                    "type": "object",
+                    "description": "新KPI目标（可选）"
+                },
+                "is_active": {
+                    "type": "boolean",
+                    "description": "是否激活（设为False相当于归档）"
+                }
+            },
+            "required": ["user_id", "project_id"]
+        },
+        func=tool_update_project
+    )
+
+    # 30. 切换项目模式
+    tool_registry.register(
+        name="set_project_mode",
+        description="切换项目模式（NORMAL/SPRINT）。SPRINT模式下，项目的所有任务都晋升为Main Quest，优先安排。同一时间只建议一个项目处于SPRINT模式。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "项目ID"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["NORMAL", "SPRINT"],
+                    "description": "目标模式"
+                }
+            },
+            "required": ["user_id", "project_id", "mode"]
+        },
+        func=tool_set_project_mode
+    )
+
+    # 31. 将任务分配到项目
+    tool_registry.register(
+        name="assign_task_to_project",
+        description="将一个事件/任务分配到指定项目。分配后，任务会根据项目的tier和mode自动获得quest_type（MAIN/SIDE）。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "event_id": {
+                    "type": "string",
+                    "description": "事件/任务ID"
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "目标项目ID（设为null可解除关联）"
+                }
+            },
+            "required": ["user_id", "event_id", "project_id"]
+        },
+        func=tool_assign_task_to_project
+    )
+
+    # 32. 获取任务概览（按Quest类型分组）
+    tool_registry.register(
+        name="get_quest_overview",
+        description="获取用户的任务概览，按Quest类型分组：Main Quest（主线）、Side Quest（支线）、Daily Quest（日常）。用于展示游戏化的任务视图。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "date": {
+                    "type": "string",
+                    "description": "指定日期，YYYY-MM-DD格式（默认今天）"
+                }
+            },
+            "required": ["user_id"]
+        },
+        func=tool_get_quest_overview
+    )
+
 
 # ============ Tool 实现函数 ============
 
@@ -1015,24 +1203,49 @@ async def tool_create_event(
 
 async def tool_query_events(
     user_id: str,
+    event_date: Optional[str] = None,
     category: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 50
 ) -> Dict[str, Any]:
     """查询事件"""
+    import pytz
+    
+    start_date = None
+    end_date = None
+    
+    # 如果指定了 event_date，转换为日期范围
+    if event_date:
+        try:
+            user_tz = pytz.timezone("Asia/Shanghai")
+            
+            dt = datetime.strptime(event_date, "%Y-%m-%d")
+            dt = user_tz.localize(dt)
+            start_date = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_date = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+        except ValueError as e:
+            print(f"Error parsing event_date in tool_query_events: {e}")
+    
     filters = {}
     if category:
         filters["category"] = category
     if status:
         filters["status"] = status
 
-    events = await db_service.get_events(user_id, filters=filters, limit=limit)
+    events = await db_service.get_events(
+        user_id, 
+        start_date=start_date,
+        end_date=end_date,
+        filters=filters, 
+        limit=limit
+    )
 
+    date_msg = f"（{event_date}）" if event_date else ""
     return {
         "success": True,
         "events": events,
         "count": len(events),
-        "message": f"找到 {len(events)} 个事件"
+        "message": f"找到 {len(events)} 个事件{date_msg}"
     }
 
 
@@ -2040,5 +2253,320 @@ async def tool_analyze_schedule(
         }
 
 
+# ============ Project Management Tool Implementations ============
+
+async def tool_create_project(
+    user_id: str,
+    title: str,
+    description: Optional[str] = None,
+    type: str = "FINITE",
+    base_tier: int = 1,
+    energy_type: str = "BALANCED",
+    target_kpi: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    创建人生项目
+    
+    Args:
+        user_id: 用户ID
+        title: 项目名称
+        description: 项目描述
+        type: 项目类型 (FINITE/INFINITE)
+        base_tier: 优先级等级 (0=核心, 1=成长, 2=兴趣)
+        energy_type: 能量类型 (MENTAL/PHYSICAL/BALANCED)
+        target_kpi: 目标KPI
+    
+    Returns:
+        创建的项目信息
+    """
+    project_data = {
+        "user_id": user_id,
+        "title": title,
+        "description": description,
+        "type": type,
+        "base_tier": base_tier,
+        "current_mode": "NORMAL",
+        "energy_type": energy_type,
+        "target_kpi": target_kpi,
+        "is_active": True
+    }
+    
+    try:
+        project = await db_service.create_project(project_data)
+        
+        # Compute quest type for display
+        quest_type = "MAIN" if base_tier == 0 else "SIDE"
+        
+        return {
+            "success": True,
+            "project": project,
+            "quest_type": quest_type,
+            "message": f"[PROJECT] 已创建{quest_type}项目「{title}」"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"[PROJECT] 创建失败：{str(e)}"
+        }
+
+
+async def tool_get_projects(
+    user_id: str,
+    active_only: bool = True,
+    include_stats: bool = False
+) -> Dict[str, Any]:
+    """
+    获取用户项目列表
+    """
+    try:
+        projects = await db_service.get_projects(
+            user_id=user_id,
+            is_active=active_only if active_only else None,
+            include_stats=include_stats
+        )
+        
+        # Group by tier
+        grouped = {
+            "tier_0": [],  # 核心 (Main Quest)
+            "tier_1": [],  # 成长 (Side Quest)
+            "tier_2": [],  # 兴趣 (Side Quest)
+            "sprint": []   # SPRINT模式中的项目
+        }
+        
+        for proj in projects:
+            if proj.get("current_mode") == "SPRINT":
+                grouped["sprint"].append(proj)
+            elif proj.get("base_tier") == 0:
+                grouped["tier_0"].append(proj)
+            elif proj.get("base_tier") == 1:
+                grouped["tier_1"].append(proj)
+            else:
+                grouped["tier_2"].append(proj)
+        
+        return {
+            "success": True,
+            "projects": projects,
+            "grouped": grouped,
+            "total": len(projects),
+            "message": f"[PROJECT] 找到 {len(projects)} 个项目"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"[PROJECT] 获取失败：{str(e)}"
+        }
+
+
+async def tool_update_project(
+    user_id: str,
+    project_id: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    base_tier: Optional[int] = None,
+    target_kpi: Optional[Dict[str, Any]] = None,
+    is_active: Optional[bool] = None
+) -> Dict[str, Any]:
+    """
+    更新项目信息
+    """
+    update_data = {}
+    if title is not None:
+        update_data["title"] = title
+    if description is not None:
+        update_data["description"] = description
+    if base_tier is not None:
+        update_data["base_tier"] = base_tier
+    if target_kpi is not None:
+        update_data["target_kpi"] = target_kpi
+    if is_active is not None:
+        update_data["is_active"] = is_active
+    
+    try:
+        project = await db_service.update_project(
+            project_id=project_id,
+            user_id=user_id,
+            update_data=update_data
+        )
+        
+        if project:
+            return {
+                "success": True,
+                "project": project,
+                "message": f"[PROJECT] 已更新项目「{project.get('title')}」"
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Project not found",
+                "message": "[PROJECT] 项目不存在"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"[PROJECT] 更新失败：{str(e)}"
+        }
+
+
+async def tool_set_project_mode(
+    user_id: str,
+    project_id: str,
+    mode: str
+) -> Dict[str, Any]:
+    """
+    切换项目模式 (NORMAL/SPRINT)
+    """
+    try:
+        result = await db_service.set_project_mode(
+            project_id=project_id,
+            user_id=user_id,
+            mode=mode,
+            warn_on_multiple_sprint=True
+        )
+        
+        if result.get("warning"):
+            return {
+                "success": False,
+                "warning": True,
+                "existing_sprint": result.get("existing_sprint_title"),
+                "message": f"[PROJECT] 注意：「{result.get('existing_sprint_title')}」已经处于冲刺模式。建议先完成再开启新冲刺。"
+            }
+        elif result.get("success"):
+            project = result.get("project")
+            mode_name = "冲刺" if mode == "SPRINT" else "平稳"
+            return {
+                "success": True,
+                "project": project,
+                "message": f"[PROJECT] 已将「{project.get('title')}」切换到{mode_name}模式"
+            }
+        else:
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "message": f"[PROJECT] 切换失败：{result.get('error')}"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"[PROJECT] 切换失败：{str(e)}"
+        }
+
+
+async def tool_assign_task_to_project(
+    user_id: str,
+    event_id: str,
+    project_id: Optional[str]
+) -> Dict[str, Any]:
+    """
+    将任务分配到项目
+    """
+    try:
+        # Update the event's project_id
+        update_data = {"project_id": project_id}
+        event = await db_service.update_event(
+            event_id=event_id,
+            user_id=user_id,
+            update_data=update_data
+        )
+        
+        if event:
+            if project_id:
+                # Get project to compute quest type
+                project = await db_service.get_project(project_id, user_id)
+                if project:
+                    quest_type = db_service.compute_quest_type_for_event(event, {project_id: project})
+                    return {
+                        "success": True,
+                        "event": event,
+                        "quest_type": quest_type,
+                        "project_title": project.get("title"),
+                        "message": f"[PROJECT] 已将「{event.get('title')}」归入「{project.get('title')}」({quest_type})"
+                    }
+            
+            return {
+                "success": True,
+                "event": event,
+                "quest_type": "DAILY",
+                "message": f"[PROJECT] 已解除「{event.get('title')}」的项目关联"
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Event not found",
+                "message": "[PROJECT] 任务不存在"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"[PROJECT] 分配失败：{str(e)}"
+        }
+
+
+async def tool_get_quest_overview(
+    user_id: str,
+    date: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    获取任务概览（按Quest类型分组）
+    """
+    try:
+        # Parse date
+        if date:
+            target_date = datetime.strptime(date, "%Y-%m-%d")
+        else:
+            target_date = datetime.now()
+        
+        # Get all events for the date
+        start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+        
+        events = await db_service.get_events(
+            user_id=user_id,
+            start_date=start_of_day,
+            end_date=end_of_day,
+            filters={"is_template": False}
+        )
+        
+        # Get all projects for quest type computation
+        projects = await db_service.get_projects(user_id=user_id, is_active=True)
+        projects_cache = {p["id"]: p for p in projects}
+        
+        # Classify events by quest type
+        quest_overview = {
+            "MAIN": [],
+            "SIDE": [],
+            "DAILY": []
+        }
+        
+        for event in events:
+            quest_type = db_service.compute_quest_type_for_event(event, projects_cache)
+            event["quest_type"] = quest_type
+            quest_overview[quest_type].append(event)
+        
+        return {
+            "success": True,
+            "date": target_date.strftime("%Y-%m-%d"),
+            "overview": quest_overview,
+            "counts": {
+                "main": len(quest_overview["MAIN"]),
+                "side": len(quest_overview["SIDE"]),
+                "daily": len(quest_overview["DAILY"]),
+                "total": len(events)
+            },
+            "message": f"[QUEST] {target_date.strftime('%m/%d')} 主线{len(quest_overview['MAIN'])}个，支线{len(quest_overview['SIDE'])}个，日常{len(quest_overview['DAILY'])}个"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"[QUEST] 获取失败：{str(e)}"
+        }
+
+
 # 初始化时注册所有工具
 register_all_tools()
+

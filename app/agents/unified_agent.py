@@ -1,0 +1,464 @@
+"""
+Unified Agent - 融合 Agent
+整合 Router/Executor/Persona 能力的单一 Agent
+
+核心流程：
+1. 构建系统提示词（注入人格 + 决策偏好）
+2. 调用 LLM with tools
+3. 迭代执行工具调用（最多 30 步）
+4. 生成最终拟人化回复
+"""
+from typing import Dict, Any, Optional, List
+from datetime import datetime, date
+import json
+import logging
+
+from app.services.llm import llm_service
+from app.services.prompt import prompt_service
+from app.agents.base import (
+    BaseAgent, ConversationContext, AgentResponse, build_messages_from_context
+)
+from app.agents.tools import tool_registry
+
+
+logger = logging.getLogger("unified_agent")
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles datetime objects"""
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, date):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+class UnifiedAgent(BaseAgent):
+    """
+    Unified Agent - 融合 Agent
+    
+    整合 Router/Executor/Persona 能力：
+    - 直接判断是否需要调用工具（原 Router 的意图识别）
+    - 执行工具调用（原 Executor）
+    - 生成拟人化回复（原 Persona）
+    
+    优势：
+    - LLM 调用次数从 3-4 次降为 1-2 次
+    - 响应延迟显著降低
+    - 系统复杂度降低
+    """
+    
+    name = "unified_agent"
+    
+    def __init__(self):
+        self.llm = llm_service
+        self.tools = tool_registry
+        self.max_iterations = 30  # 支持复杂多步操作
+    
+    async def process(self, context: ConversationContext) -> AgentResponse:
+        """
+        处理用户消息，整合意图识别、工具调用和回复生成
+        
+        Args:
+            context: 对话上下文（包含用户画像、决策偏好、历史消息）
+        
+        Returns:
+            AgentResponse: 包含最终回复、操作记录、建议选项等
+        """
+        # 1. 构建系统提示（注入人格画像和决策偏好）
+        system_prompt = self._build_system_prompt(context)
+        
+        # 在系统提示中明确告知 user_id
+        system_prompt += f"\n\n## 当前用户\n\n用户ID: {context.user_id}\n在调用需要 user_id 的工具时，请直接使用此 ID，不需要询问用户。"
+        
+        # 2. 构建消息列表
+        messages = build_messages_from_context(
+            context=context,
+            system_prompt=system_prompt,
+            max_history=20  # UnifiedAgent 可以处理更多历史
+        )
+        
+        # 3. 对话循环 - 支持多步工具调用
+        iterations = 0
+        tool_results = []
+        all_tool_calls = []
+        final_content = ""
+        
+        while iterations < self.max_iterations:
+            iterations += 1
+            
+            # 获取工具列表（OpenAI 格式）
+            tools_schema = self._convert_tools_to_openai_format()
+            
+            # 调用 LLM
+            response = await self.llm.tools_calling(
+                messages=messages,
+                tools=tools_schema,
+                tool_choice="auto",
+                temperature=0.7  # 平衡创意和准确性
+            )
+            
+            tool_calls = response.get("tool_calls")
+            content = response.get("content", "")
+            
+            if tool_calls:
+                # LLM 决定调用工具
+                all_tool_calls.extend(tool_calls)
+                messages.append({
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": tool_calls
+                })
+                
+                # 执行所有工具调用
+                for tool_call in tool_calls:
+                    function_name = tool_call["function"]["name"]
+                    function_args = json.loads(tool_call["function"]["arguments"])
+                    
+                    # 自动添加 user_id（如果工具需要但用户没提供）
+                    if "user_id" in str(tool_call["function"]) and "user_id" not in function_args:
+                        function_args["user_id"] = context.user_id
+                    
+                    # 执行工具
+                    try:
+                        result = await self.tools.call_tool(function_name, function_args)
+                        tool_results.append(result)
+                        logger.debug(f"Tool {function_name} executed: {result.get('success', False)}")
+                    except Exception as e:
+                        logger.error(f"Tool {function_name} failed: {e}")
+                        result = {"success": False, "error": str(e)}
+                        tool_results.append(result)
+                    
+                    # 将工具结果添加到消息中
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": json.dumps(result, ensure_ascii=False, cls=DateTimeEncoder)
+                    })
+                
+                # 继续循环，让 LLM 看到工具结果后决定下一步
+                continue
+            else:
+                # LLM 没有调用工具，生成最终回复
+                final_content = content
+                messages.append({
+                    "role": "assistant",
+                    "content": content
+                })
+                break
+        
+        # 4. 提取结构化数据
+        actions = self._extract_actions(tool_results)
+        suggestions = self._extract_suggestions(tool_results)
+        query_results = self._extract_query_results(tool_results)
+        
+        # 5. 构建元数据
+        metadata = {
+            "unified_agent": True,
+            "iterations": iterations,
+            "tool_calls_count": len(all_tool_calls),
+            "operations_count": len(actions),
+            "has_errors": any(not r.get("success") for r in tool_results),
+            "query_results": query_results
+        }
+        
+        return AgentResponse(
+            content=final_content or "抱歉，我没有理解您的需求。",
+            actions=actions,
+            tool_calls=all_tool_calls,
+            suggestions=suggestions,
+            metadata=metadata
+        )
+    
+    def _build_system_prompt(self, context: ConversationContext) -> str:
+        """
+        构建系统提示词，注入用户画像和决策偏好
+        
+        Args:
+            context: 对话上下文
+        
+        Returns:
+            系统提示词
+        """
+        # 获取基础提示词
+        try:
+            base_prompt = prompt_service.load_prompt("agents/unified")
+        except Exception as e:
+            logger.warning(f"Failed to load unified prompt: {e}, using default")
+            base_prompt = self._get_default_system_prompt()
+        
+        # 替换时间
+        current_time = context.current_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        prompt = base_prompt.replace("{current_time}", current_time)
+        
+        # 注入用户画像
+        user_profile_str = self._format_user_profile(context.user_profile)
+        prompt = prompt.replace("{user_profile}", user_profile_str)
+        
+        # 注入决策偏好
+        decision_profile_str = self._format_decision_profile(context.user_decision_profile)
+        prompt = prompt.replace("{user_decision_profile}", decision_profile_str)
+        
+        return prompt
+    
+    def _format_user_profile(self, profile: Optional[Dict[str, Any]]) -> str:
+        """格式化用户画像为可读文本"""
+        if not profile:
+            return "暂无用户画像信息"
+        
+        parts = []
+        
+        # 偏好
+        preferences = profile.get("preferences", {})
+        if preferences:
+            social = preferences.get("social_preference", "")
+            if social:
+                social_map = {
+                    "introverted": "偏内向，喜欢简洁交流",
+                    "extroverted": "偏外向，可以多聊几句",
+                    "balanced": "社交平衡"
+                }
+                parts.append(f"社交倾向: {social_map.get(social, social)}")
+            
+            work_style = preferences.get("work_style", "")
+            if work_style:
+                parts.append(f"工作风格: {work_style}")
+        
+        # 显式规则
+        explicit_rules = profile.get("explicit_rules", [])
+        if explicit_rules:
+            parts.append("用户规则:")
+            for rule in explicit_rules[:5]:
+                parts.append(f"  - {rule}")
+        
+        return "\n".join(parts) if parts else "暂无用户画像信息"
+    
+    def _format_decision_profile(self, profile: Optional[Dict[str, Any]]) -> str:
+        """格式化决策偏好为可读文本"""
+        if not profile:
+            return "暂无决策偏好信息"
+        
+        parts = []
+        
+        # 冲突解决策略
+        strategy = profile.get("conflict_strategy") or profile.get("conflict_resolution", {}).get("strategy", "ask")
+        if strategy:
+            strategy_map = {
+                "ask": "遇到冲突时询问用户",
+                "prioritize_urgent": "冲突时优先处理紧急事项",
+                "merge": "冲突时尝试合并事项"
+            }
+            parts.append(f"冲突策略: {strategy_map.get(strategy, strategy)}")
+        
+        # 显式规则
+        explicit_rules = profile.get("explicit_rules", [])
+        if explicit_rules:
+            parts.append("决策规则:")
+            for rule in explicit_rules[:5]:
+                parts.append(f"  - {rule}")
+        
+        # 场景偏好
+        scenarios = profile.get("scenario_stats", {}) or profile.get("top_scenarios", {})
+        if scenarios:
+            parts.append("场景偏好:")
+            for scenario, data in list(scenarios.items())[:3]:
+                action = data.get("action", "") if isinstance(data, dict) else data
+                if action:
+                    parts.append(f"  - {scenario}: {action}")
+        
+        return "\n".join(parts) if parts else "暂无决策偏好信息"
+    
+    def _get_default_system_prompt(self) -> str:
+        """默认系统提示词（备用）"""
+        return """# Role & Persona
+你叫 UniLife，是用户的生活死党。你的说话风格是轻松、口语化、带点幽默的。
+但你在处理任务时必须极其严谨。
+
+## 当前用户画像
+{user_profile}
+
+---
+
+# 当前时间参考 [最高优先级]
+当前本地时间：{current_time}
+**必须使用上述时间作为"今天""明天""这周"等相对时间的唯一参考。**
+
+---
+
+# Capabilities & Tools
+你可以操作用户的日程表。当用户要求安排任务时，不要空谈，直接调用对应的工具。
+
+## 用户决策偏好
+{user_decision_profile}
+
+---
+
+# Constraints
+1. **优先调用工具**：如果用户意图涉及日程，必须优先调用 Tool
+2. **回复逻辑**：
+   - 调用工具后：根据工具返回结果，用人格风格回复
+   - 未调用工具：直接用人格风格闲聊
+3. **禁止臆造**：不要假设 API 的返回结果
+
+# 结构化UI适配
+查询日程时只说概述，不列举详情。卡片会自动展示事件。
+"""
+    
+    def _convert_tools_to_openai_format(self) -> List[Dict[str, Any]]:
+        """将工具转换为 OpenAI API 格式"""
+        tools = self.tools.list_tools()
+        openai_tools = []
+        
+        for tool in tools:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["parameters"]
+                }
+            })
+        
+        return openai_tools
+    
+    def _extract_actions(self, tool_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """从工具结果中提取操作记录"""
+        actions = []
+        
+        for result in tool_results:
+            if not result.get("success"):
+                continue
+            
+            # 事件操作
+            if "event" in result:
+                event = result["event"]
+                message = result.get("message", "")
+                
+                if message.startswith("已创建"):
+                    actions.append({
+                        "type": "create_event",
+                        "event_id": event.get("id"),
+                        "event": event
+                    })
+                elif message.startswith("已更新") or message.startswith("已修改"):
+                    actions.append({
+                        "type": "update_event",
+                        "event_id": event.get("id"),
+                        "event": event
+                    })
+                elif message.startswith("已删除") or message.startswith("已取消"):
+                    actions.append({
+                        "type": "delete_event",
+                        "event_id": event.get("id"),
+                        "event": event
+                    })
+                elif message.startswith("已完成"):
+                    actions.append({
+                        "type": "complete_event",
+                        "event_id": event.get("id"),
+                        "event": event
+                    })
+            
+            # 习惯/模板操作
+            if "routine" in result:
+                routine = result["routine"]
+                actions.append({
+                    "type": "create_routine",
+                    "routine_id": routine.get("id"),
+                    "routine": routine
+                })
+            
+            if "template" in result:
+                template = result["template"]
+                actions.append({
+                    "type": "create_routine_template",
+                    "template_id": template.get("id"),
+                    "template": template
+                })
+        
+        return actions
+    
+    def _extract_suggestions(self, tool_results: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """从工具结果中提取建议选项"""
+        for result in tool_results:
+            if result.get("success") and "suggestions" in result:
+                return result["suggestions"]
+        return None
+    
+    def _extract_query_results(self, tool_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """从工具结果中提取查询结果（用于前端结构化展示）"""
+        # 1. 收集所有被操作（删除/取消）的事件 ID
+        deleted_event_ids = set()
+        for result in tool_results:
+            if result.get("success"):
+                # 删除的事件
+                if "deleted_event" in result:
+                    deleted_event_ids.add(result["deleted_event"].get("id"))
+                # 通过 update_event 取消的事件
+                elif "event" in result:
+                    message = result.get("message", "")
+                    if message.startswith("已删除") or message.startswith("已取消"):
+                        deleted_event_ids.add(result["event"].get("id"))
+        
+        query_results = []
+        
+        for result in tool_results:
+            if not result.get("success"):
+                continue
+            
+            # 事件查询结果
+            if "events" in result:
+                # 过滤掉已被删除的事件
+                events = [e for e in result.get("events", []) if e.get("id") not in deleted_event_ids][:10]
+                if events:  # 只有非空才添加
+                    query_results.append({
+                        "type": "events",
+                        "count": len(events),
+                        "events": events
+                    })
+            
+            # 日程概览
+            elif "schedule_overview" in result or "recent_events" in result:
+                recent_events = [e for e in result.get("recent_events", []) if e.get("id") not in deleted_event_ids][:10]
+                query_results.append({
+                    "type": "schedule_overview",
+                    "statistics": result.get("statistics", {}),
+                    "recent_events": recent_events
+                })
+            
+            # 统计数据
+            elif "statistics" in result:
+                query_results.append({
+                    "type": "statistics",
+                    "data": result.get("statistics", {})
+                })
+            
+            # 习惯/模板查询
+            elif "routines" in result or "templates" in result:
+                query_results.append({
+                    "type": "routines",
+                    "count": result.get("count", 0),
+                    "routines": result.get("routines", result.get("templates", []))[:10]
+                })
+            
+            # 项目查询
+            elif "projects" in result:
+                query_results.append({
+                    "type": "projects",
+                    "count": result.get("count", 0),
+                    "projects": result.get("projects", [])[:10]
+                })
+            
+            # Quest 概览
+            elif "quest_overview" in result:
+                query_results.append({
+                    "type": "quest_overview",
+                    "data": result.get("quest_overview", {})
+                })
+        
+        return query_results
+
+
+# 全局 UnifiedAgent 实例
+unified_agent = UnifiedAgent()

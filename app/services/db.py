@@ -171,6 +171,11 @@ class EventModel(Base):
     # Routine template marker
     is_template = Column(Boolean, default=False)  # True = Routine template (not displayed in calendar)
 
+    # Project association (Life Project system)
+    project_id = Column(String, nullable=True)  # FK to projects table
+    anchor_time = Column(DateTime, nullable=True)  # Hard deadline time
+    energy_cost = Column(String, nullable=True)  # HIGH/NORMAL/LOW for AI scheduling
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
         return {
@@ -219,7 +224,71 @@ class EventModel(Base):
             "routine_completed_dates": self.routine_completed_dates,
             "habit_completed_count": self.habit_completed_count,
             "habit_total_count": self.habit_total_count,
+            # Project association
+            "project_id": self.project_id,
+            "anchor_time": self.anchor_time.isoformat() if self.anchor_time else None,
+            "energy_cost": self.energy_cost,
         }
+
+
+class ProjectModel(Base):
+    """Project table model - Life Projects (人生项目)"""
+    __tablename__ = "projects"
+
+    id = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False)
+
+    # Basic information
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+
+    # Project classification
+    type = Column(String, default="FINITE")  # FINITE or INFINITE
+    base_tier = Column(Integer, default=1)  # 0=核心, 1=成长, 2=兴趣
+    current_mode = Column(String, default="NORMAL")  # NORMAL or SPRINT
+    energy_type = Column(String, default="BALANCED")  # MENTAL, PHYSICAL, BALANCED
+
+    # Target KPIs
+    target_kpi = Column(JSON, nullable=True)
+
+    # Status
+    is_active = Column(Boolean, default=True)
+
+    # Statistics
+    total_tasks = Column(Integer, default=0)
+    completed_tasks = Column(Integer, default=0)
+    total_focus_minutes = Column(Integer, default=0)
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "title": self.title,
+            "description": self.description,
+            "type": self.type,
+            "base_tier": self.base_tier,
+            "current_mode": self.current_mode,
+            "energy_type": self.energy_type,
+            "target_kpi": self.target_kpi,
+            "is_active": self.is_active,
+            "total_tasks": self.total_tasks,
+            "completed_tasks": self.completed_tasks,
+            "total_focus_minutes": self.total_focus_minutes,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    def compute_quest_type(self) -> str:
+        """Compute the quest type for tasks in this project"""
+        if self.base_tier == 0 or self.current_mode == "SPRINT":
+            return "MAIN"
+        else:
+            return "SIDE"
 
 
 
@@ -1631,6 +1700,201 @@ class DatabaseService:
                 "completed_dates": completed_dates
             }
 
+    # ============ Project Operations ============
+
+    async def create_project(self, project_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new project"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            # Generate ID if not provided
+            if "id" not in project_data:
+                project_data["id"] = str(uuid.uuid4())
+            
+            project = ProjectModel(**project_data)
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            return project.to_dict()
+
+    async def get_projects(
+        self,
+        user_id: str,
+        is_active: Optional[bool] = True,
+        include_stats: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Get all projects for a user"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            query = session.query(ProjectModel).filter(ProjectModel.user_id == user_id)
+            
+            if is_active is not None:
+                query = query.filter(ProjectModel.is_active == is_active)
+            
+            projects = query.order_by(ProjectModel.base_tier, ProjectModel.created_at).all()
+            result = [p.to_dict() for p in projects]
+            
+            # Optionally include task statistics
+            if include_stats:
+                for proj in result:
+                    # Count tasks in this project
+                    task_count = session.query(EventModel).filter(
+                        EventModel.project_id == proj["id"],
+                        EventModel.is_template == False
+                    ).count()
+                    
+                    completed_count = session.query(EventModel).filter(
+                        EventModel.project_id == proj["id"],
+                        EventModel.status == "COMPLETED",
+                        EventModel.is_template == False
+                    ).count()
+                    
+                    proj["total_tasks"] = task_count
+                    proj["completed_tasks"] = completed_count
+            
+            return result
+
+    async def get_project(self, project_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific project by ID"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            project = session.query(ProjectModel).filter(
+                ProjectModel.id == project_id,
+                ProjectModel.user_id == user_id
+            ).first()
+            return project.to_dict() if project else None
+
+    async def update_project(
+        self,
+        project_id: str,
+        user_id: str,
+        update_data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Update an existing project"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            project = session.query(ProjectModel).filter(
+                ProjectModel.id == project_id,
+                ProjectModel.user_id == user_id
+            ).first()
+
+            if not project:
+                return None
+
+            for key, value in update_data.items():
+                if hasattr(project, key) and value is not None:
+                    setattr(project, key, value)
+
+            project.updated_at = datetime.utcnow()
+            session.commit()
+            session.refresh(project)
+            return project.to_dict()
+
+    async def delete_project(self, project_id: str, user_id: str) -> bool:
+        """Delete a project (soft delete by setting is_active=False)"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            project = session.query(ProjectModel).filter(
+                ProjectModel.id == project_id,
+                ProjectModel.user_id == user_id
+            ).first()
+
+            if not project:
+                return False
+
+            # Soft delete
+            project.is_active = False
+            project.updated_at = datetime.utcnow()
+            session.commit()
+            return True
+
+    async def set_project_mode(
+        self,
+        project_id: str,
+        user_id: str,
+        mode: str,
+        warn_on_multiple_sprint: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Set project mode (NORMAL or SPRINT)
+        
+        If warn_on_multiple_sprint is True and user tries to set SPRINT
+        when another project is already in SPRINT, return a warning.
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            project = session.query(ProjectModel).filter(
+                ProjectModel.id == project_id,
+                ProjectModel.user_id == user_id
+            ).first()
+
+            if not project:
+                return {"success": False, "error": "Project not found"}
+
+            # Check for existing SPRINT projects
+            if mode == "SPRINT" and warn_on_multiple_sprint:
+                existing_sprint = session.query(ProjectModel).filter(
+                    ProjectModel.user_id == user_id,
+                    ProjectModel.current_mode == "SPRINT",
+                    ProjectModel.id != project_id,
+                    ProjectModel.is_active == True
+                ).first()
+                
+                if existing_sprint:
+                    return {
+                        "success": False,
+                        "warning": True,
+                        "message": f"Project '{existing_sprint.title}' is already in SPRINT mode. Consider completing it first.",
+                        "existing_sprint_id": existing_sprint.id,
+                        "existing_sprint_title": existing_sprint.title
+                    }
+
+            project.current_mode = mode
+            project.updated_at = datetime.utcnow()
+            session.commit()
+            session.refresh(project)
+            
+            return {"success": True, "project": project.to_dict()}
+
+    async def get_projects_by_ids(self, project_ids: List[str], user_id: str) -> Dict[str, Dict[str, Any]]:
+        """Get multiple projects by IDs, returns a dict keyed by project_id"""
+        self._ensure_initialized()
+        with self.get_session() as session:
+            projects = session.query(ProjectModel).filter(
+                ProjectModel.id.in_(project_ids),
+                ProjectModel.user_id == user_id
+            ).all()
+            
+            return {p.id: p.to_dict() for p in projects}
+
+    def compute_quest_type_for_event(
+        self,
+        event: Dict[str, Any],
+        projects_cache: Dict[str, Dict[str, Any]]
+    ) -> str:
+        """
+        Compute quest type for an event based on its project association
+        
+        Args:
+            event: Event dictionary
+            projects_cache: Dict mapping project_id to Project dict
+            
+        Returns:
+            "MAIN", "SIDE", or "DAILY"
+        """
+        project_id = event.get("project_id")
+        
+        if project_id is None:
+            return "DAILY"
+        
+        project = projects_cache.get(project_id)
+        if project is None:
+            return "DAILY"
+        
+        if project.get("base_tier") == 0 or project.get("current_mode") == "SPRINT":
+            return "MAIN"
+        else:
+            return "SIDE"
+
 
 # Import uuid at module level
 import uuid
@@ -1638,3 +1902,4 @@ import uuid
 
 # Global database service instance
 db_service = DatabaseService()
+

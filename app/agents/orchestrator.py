@@ -1,12 +1,15 @@
 """
 Agent Orchestrator - 多智能体编排器
-协调 Router、Executor、Persona、Observer 四层智能体
+支持两种模式：
+- 3+1 模式: Router → Executor → Persona + Observer (经典架构)
+- 1+1 模式: UnifiedAgent + Observer (融合架构，更快响应)
 """
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import asyncio
 import json
 import time
+import os
 
 from app.agents.base import (
     ConversationContext, AgentResponse,
@@ -20,25 +23,63 @@ from app.agents.observer_tracker import observer_trigger_tracker
 from app.services.profile_service import profile_service
 from app.services.conversation_service import conversation_service
 
+# 环境变量控制是否使用 Unified 模式
+# 设置 UNIFIED_AGENT_MODE=true 启用 1+1 架构
+UNIFIED_MODE = os.environ.get("UNIFIED_AGENT_MODE", "false").lower() == "true"
+
 
 class AgentOrchestrator:
     """
     智能体编排器 - 协调多 Agent 协作
 
-    架构流程：
+    支持两种架构模式：
+    
+    3+1 模式 (经典架构):
     1. Router → 识别意图，决定路由
     2. Executor → 执行工具调用（如果需要）
     3. Persona → 生成拟人化回复
     4. Observer → 异步分析，更新画像
+    
+    1+1 模式 (融合架构, unified_mode=True):
+    1. UnifiedAgent → 意图识别 + 工具调用 + 拟人化回复
+    2. Observer → 异步分析，更新画像
+    
+    通过设置环境变量 UNIFIED_AGENT_MODE=true 或构造参数 unified_mode=True 切换模式
     """
 
-    def __init__(self):
+    def __init__(self, unified_mode: Optional[bool] = None):
+        # 决定使用哪种模式：参数优先，否则使用环境变量
+        self.unified_mode = unified_mode if unified_mode is not None else UNIFIED_MODE
+        
+        # 3+1 模式的 Agents
         self.router = router_agent
         self.executor = executor_agent
         self.persona = persona_agent
+        
+        # 共用的 Agents
         self.observer = observer_agent
         self.observer_tracker = observer_trigger_tracker
         self._background_task: Optional[asyncio.Task] = None
+        
+        # 1+1 模式的 UnifiedAgent（延迟导入，避免循环依赖）
+        self._unified_agent = None
+        if self.unified_mode:
+            self._init_unified_agent()
+    
+    def _init_unified_agent(self):
+        """初始化 UnifiedAgent 和 ContextFilterAgent（延迟导入）"""
+        try:
+            from app.agents.unified_agent import unified_agent
+            from app.agents.context_filter_agent import context_filter_agent
+            self._unified_agent = unified_agent
+            self._context_filter = context_filter_agent
+            import logging
+            logging.getLogger("orchestrator").info("Unified mode enabled (1+1 architecture with context filter)")
+        except ImportError as e:
+            import logging
+            logging.getLogger("orchestrator").error(f"Failed to import unified_agent or context_filter: {e}")
+            self.unified_mode = False
+            self._context_filter = None
 
     def _get_conversation_logger(self):
         """延迟导入对话日志记录器"""
@@ -91,6 +132,17 @@ class AgentOrchestrator:
                 user_message=user_message,
                 current_time=current_time
             )
+            
+            # 分支：Unified 模式使用单一 Agent 处理
+            if self.unified_mode and self._unified_agent:
+                return await self._process_unified(
+                    context=context,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    start_time=start_time,
+                    conv_logger=conv_logger,
+                    logger=logger
+                )
 
             # 2. Router 路由
             router_start = time.time()
@@ -230,6 +282,131 @@ class AgentOrchestrator:
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
             raise
+    
+    async def _process_unified(
+        self,
+        context: ConversationContext,
+        user_id: str,
+        conversation_id: str,
+        start_time: float,
+        conv_logger,
+        logger
+    ) -> Dict[str, Any]:
+        """
+        使用 UnifiedAgent 处理请求 (1+1 模式)
+        
+        流程：
+        1. ContextFilterAgent 筛选上下文（可选）
+        2. UnifiedAgent 处理请求
+        3. Observer 异步分析
+        
+        Args:
+            context: 对话上下文
+            user_id: 用户ID
+            conversation_id: 对话ID
+            start_time: 请求开始时间
+            conv_logger: 对话日志记录器
+            logger: 标准日志记录器
+        
+        Returns:
+            处理结果字典
+        """
+        filter_duration = 0
+        original_history_count = len(context.conversation_history)
+        
+        # 1. 先使用 ContextFilterAgent 筛选上下文
+        if self._context_filter and len(context.conversation_history) > 3:
+            filter_start = time.time()
+            filter_response = await self._context_filter.process(context)
+            filter_duration = time.time() - filter_start
+            
+            # 使用筛选后的上下文
+            if filter_response.filtered_context is not None:
+                context.conversation_history = filter_response.filtered_context
+                logger.debug(f"Context filtered: {original_history_count} → {len(context.conversation_history)} messages in {filter_duration:.2f}s")
+        
+        # 2. 调用 UnifiedAgent 处理
+        unified_start = time.time()
+        unified_response = await self._unified_agent.process(context)
+        unified_duration = time.time() - unified_start
+        logger.debug(f"UnifiedAgent completed in {unified_duration:.2f}s")
+        
+        # 记录路由信息
+        conv_logger.log_routing(
+            routing_decision="unified",
+            confidence=1.0,
+            reasoning=f"Unified mode with context filter ({original_history_count}→{len(context.conversation_history)})"
+        )
+        
+        # 记录执行的操作
+        if unified_response.actions:
+            conv_logger.log_actions(unified_response.actions)
+        
+        # 3. 构建返回结果
+        result = {
+            "reply": unified_response.content,
+            "actions": unified_response.actions or [],
+            "tool_calls": unified_response.tool_calls or [],
+            "suggestions": unified_response.suggestions,
+            "query_results": unified_response.metadata.get("query_results", []) if unified_response.metadata else [],
+            "routing_metadata": {
+                "mode": "unified",
+                "context_filter": {
+                    "original": original_history_count,
+                    "filtered": len(context.conversation_history)
+                },
+                "iterations": unified_response.metadata.get("iterations", 1) if unified_response.metadata else 1,
+                "tool_calls_count": unified_response.metadata.get("tool_calls_count", 0) if unified_response.metadata else 0
+            },
+            "timing": {
+                "context_filter": filter_duration,
+                "unified": unified_duration,
+                "total": time.time() - start_time
+            }
+        }
+        
+        # 记录最终回复
+        conv_logger.log_reply(unified_response.content)
+        
+        # 3. 添加到 Observer 追踪器（与 3+1 模式相同）
+        logger.debug("Adding conversation to Observer tracker...")
+        
+        full_context = await conversation_service.get_recent_context(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            hours=72,
+            max_messages=100
+        )
+        
+        trigger_info = self.observer_tracker.add_message(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            conversation_context=full_context
+        )
+        
+        if trigger_info:
+            logger.info(f"Observer threshold triggered: {trigger_info['trigger_type']}, messages: {trigger_info['message_count']}")
+            asyncio.create_task(
+                self.observer.analyze_conversation_batch(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    full_context=trigger_info['full_context']
+                )
+            )
+        
+        # 启动后台任务检查延迟触发
+        if self._background_task is None or self._background_task.done():
+            self._background_task = asyncio.create_task(
+                self._observer_background_loop()
+            )
+        
+        # 记录对话结束
+        conv_logger.log_end()
+        
+        total_duration = time.time() - start_time
+        logger.info(f"[Unified Mode] Total processing time: {total_duration:.2f}s (UnifiedAgent: {unified_duration:.2f}s)")
+        
+        return result
 
     async def _build_context(
         self,
@@ -411,15 +588,23 @@ class AgentOrchestrator:
         Returns:
             各 Agent 的状态
         """
-        return {
+        result = {
             "orchestrator": "ok",
+            "mode": "unified (1+1)" if self.unified_mode else "classic (3+1)",
             "agents": {
-                "router": self.router.name,
-                "executor": self.executor.name,
-                "persona": self.persona.name,
                 "observer": self.observer.name
             }
         }
+        
+        if self.unified_mode:
+            result["agents"]["unified"] = self._unified_agent.name if self._unified_agent else "not loaded"
+            result["agents"]["context_filter"] = self._context_filter.name if self._context_filter else "not loaded"
+        else:
+            result["agents"]["router"] = self.router.name
+            result["agents"]["executor"] = self.executor.name
+            result["agents"]["persona"] = self.persona.name
+        
+        return result
 
 
 # 全局 Orchestrator 实例
