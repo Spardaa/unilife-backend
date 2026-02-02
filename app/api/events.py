@@ -300,40 +300,30 @@ async def update_event(
 
     # Check if this is a Routine template update
     if existing.get("is_template") and "repeat_pattern" in update_data:
-        # Update the template
+        # Update the template only - using lazy instance creation
+        # Instances will be created on-demand when user interacts with them
         result = await db_service.update_event(
             event_id=event_id,
             user_id=user_id,
             update_data=update_data
         )
 
-        # Delete old instances (keep completed ones)
+        # Delete old PENDING instances only (keep completed/cancelled ones)
+        # This ensures future virtual instances will use the updated template
         old_instances = await db_service.get_events(
             user_id=user_id,
             limit=1000
         )
         for inst in old_instances:
-            if inst.get("parent_event_id") == event_id and inst.get("status") not in ["COMPLETED", "CANCELLED"]:
+            if inst.get("parent_event_id") == event_id and inst.get("status") == "PENDING":
                 await db_service.delete_event(inst["id"], user_id)
 
-        # Generate new instances
-        new_instances_data = db_service._generate_routine_instances(
-            template=result,
-            repeat_pattern=update_data["repeat_pattern"],
-            days_ahead=90
-        )
-
-        for instance in new_instances_data:
-            instance["user_id"] = user_id
-            instance["parent_event_id"] = event_id
-
-        created_instances = await db_service.bulk_create_events(new_instances_data)
-
+        # Return updated template without generating new instances (lazy creation)
         return {
             "type": "routine",
             "template": EventResponse(**result),
-            "instances": [EventResponse(**inst) for inst in created_instances],
-            "message": "Routine template updated and instances regenerated"
+            "instances": [],  # No instances generated - will be created lazily
+            "message": "Routine template updated. Instances will be created on-demand."
         }
 
     # Check for time conflicts if times are being updated
@@ -600,6 +590,7 @@ async def create_event_instance(
         "is_physically_demanding": template.get("is_physically_demanding", False),
         "is_mentally_demanding": template.get("is_mentally_demanding", False),
         "energy_consumption": template.get("energy_consumption"),
+        "project_id": template.get("project_id"),  # Inherit project from template
         "status": EventStatus.PENDING.value,
         "created_by": "system",
         "ai_confidence": 1.0

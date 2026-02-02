@@ -446,9 +446,10 @@ class DatabaseService:
         """Create a new event in database"""
         self._ensure_initialized()
         with self.get_session() as session:
-            # Generate ID before creating model
+            # Use client-provided ID if available, otherwise generate new one
             event_data = event_data.copy()
-            event_data["id"] = str(uuid.uuid4())
+            if not event_data.get("id"):
+                event_data["id"] = str(uuid.uuid4())
 
             # Convert enums and datetime objects to strings for database storage
             if "time_period" in event_data and event_data["time_period"] is not None:

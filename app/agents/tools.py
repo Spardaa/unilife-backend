@@ -128,6 +128,10 @@ def register_all_tools():
                 "is_mentally_demanding": {
                     "type": "boolean",
                     "description": "是否需要高强度脑力消耗（如考试、深度工作等）"
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "关联的人生项目ID（可选）。如果用户提到与某个项目相关的任务，应该关联对应的项目。"
                 }
             },
             "required": ["user_id", "title"]
@@ -1060,7 +1064,9 @@ async def tool_create_event(
     location: Optional[str] = None,
     # New fields for demand flags
     is_physically_demanding: bool = False,
-    is_mentally_demanding: bool = False
+    is_mentally_demanding: bool = False,
+    # Project association
+    project_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     创建新事件（集成AI时长估计）
@@ -1168,6 +1174,7 @@ async def tool_create_event(
         "location": location,
         "is_physically_demanding": is_physically_demanding,
         "is_mentally_demanding": is_mentally_demanding,
+        "project_id": project_id,
         "tags": [],
         "participants": [],
         "status": EventStatus.PENDING.value,

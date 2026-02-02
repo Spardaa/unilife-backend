@@ -19,6 +19,7 @@ from app.agents.base import (
     BaseAgent, ConversationContext, AgentResponse, build_messages_from_context
 )
 from app.agents.tools import tool_registry
+from app.services.db import db_service
 
 
 logger = logging.getLogger("unified_agent")
@@ -66,8 +67,8 @@ class UnifiedAgent(BaseAgent):
         Returns:
             AgentResponse: 包含最终回复、操作记录、建议选项等
         """
-        # 1. 构建系统提示（注入人格画像和决策偏好）
-        system_prompt = self._build_system_prompt(context)
+        # 1. 构建系统提示（注入人格画像、决策偏好和项目列表）
+        system_prompt = await self._build_system_prompt_async(context)
         
         # 在系统提示中明确告知 user_id
         system_prompt += f"\n\n## 当前用户\n\n用户ID: {context.user_id}\n在调用需要 user_id 的工具时，请直接使用此 ID，不需要询问用户。"
@@ -202,6 +203,31 @@ class UnifiedAgent(BaseAgent):
         
         return prompt
     
+    async def _build_system_prompt_async(self, context: ConversationContext) -> str:
+        """
+        异步构建系统提示词，注入用户画像、决策偏好和项目列表
+        
+        Args:
+            context: 对话上下文
+        
+        Returns:
+            系统提示词
+        """
+        # 获取基础提示
+        prompt = self._build_system_prompt(context)
+        
+        # 异步获取用户项目并注入
+        try:
+            projects = await db_service.get_projects(context.user_id, active_only=True)
+            projects_str = self._format_user_projects(projects)
+        except Exception as e:
+            logger.warning(f"Failed to load user projects: {e}")
+            projects_str = "暂无人生项目"
+        
+        prompt = prompt.replace("{user_projects}", projects_str)
+        
+        return prompt
+    
     def _format_user_profile(self, profile: Optional[Dict[str, Any]]) -> str:
         """格式化用户画像为可读文本"""
         if not profile:
@@ -268,6 +294,27 @@ class UnifiedAgent(BaseAgent):
                     parts.append(f"  - {scenario}: {action}")
         
         return "\n".join(parts) if parts else "暂无决策偏好信息"
+    
+    def _format_user_projects(self, projects: List[Dict[str, Any]]) -> str:
+        """格式化用户项目列表为可读文本"""
+        if not projects:
+            return "暂无人生项目"
+        
+        lines = []
+        for proj in projects:
+            project_id = proj.get("id", "")
+            title = proj.get("title", "未命名")
+            tier = proj.get("base_tier", 1)
+            mode = proj.get("current_mode", "NORMAL")
+            project_type = proj.get("type", "FINITE")
+            
+            tier_name = {0: "核心", 1: "成长", 2: "兴趣"}.get(tier, "成长")
+            type_name = "长跑型" if project_type == "INFINITE" else "登山型"
+            mode_str = "[冲刺中]" if mode == "SPRINT" else ""
+            
+            lines.append(f"- {title} (ID: {project_id[:8]}...) | {tier_name} | {type_name} {mode_str}")
+        
+        return "\n".join(lines)
     
     def _get_default_system_prompt(self) -> str:
         """默认系统提示词（备用）"""

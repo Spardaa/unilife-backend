@@ -118,10 +118,13 @@ class EventBase(BaseModel):
     is_physically_demanding: bool = Field(default=False, description="User-set physical effort indicator")
     is_mentally_demanding: bool = Field(default=False, description="User-set mental effort indicator")
 
+    # Project association
+    project_id: Optional[str] = Field(None, description="Associated Life Project ID")
+
 
 class EventCreate(EventBase):
     """Create event model"""
-    pass
+    id: Optional[str] = Field(None, description="Optional client-provided event ID")
 
 
 class CreateInstanceRequest(BaseModel):
@@ -164,6 +167,7 @@ class EventUpdate(BaseModel):
     habit_interval: Optional[int] = None
     parent_event_id: Optional[str] = None
     routine_batch_id: Optional[str] = None
+    project_id: Optional[str] = None
 
     class Config:
         extra = "ignore"  # Ignore extra fields from iOS (id, user_id, created_at, updated_at)
@@ -187,6 +191,7 @@ class EventResponse(EventBase):
     parent_event_id: Optional[str] = Field(None, description="Parent event ID (for Routine instances)")
     habit_completed_count: Optional[int] = Field(None, description="Number of completed habit instances")
     habit_total_count: int = Field(default=21, description="Total habit instances (default 21)")
+    project_id: Optional[str] = Field(None, description="Associated Life Project ID")
 
     class Config:
         from_attributes = True
