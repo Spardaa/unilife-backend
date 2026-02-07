@@ -239,6 +239,9 @@ class Event(BaseModel):
     # Extracted user profile points
     extracted_points: List[ExtractedPoint] = Field(default_factory=list, description="User profile insights extracted from this event")
 
+    # Project association (Life Project system)
+    project_id: Optional[str] = Field(None, description="Associated project ID")
+
     class Config:
         json_schema_extra = {
             "example": {

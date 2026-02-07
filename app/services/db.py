@@ -1737,20 +1737,42 @@ class DatabaseService:
             # Optionally include task statistics
             if include_stats:
                 for proj in result:
-                    # Count tasks in this project
+                    # Count tasks (exclude templates AND routine/habit instances)
                     task_count = session.query(EventModel).filter(
                         EventModel.project_id == proj["id"],
-                        EventModel.is_template == False
+                        EventModel.is_template == False,
+                        EventModel.parent_routine_id.is_(None),
+                        EventModel.routine_batch_id.is_(None)
                     ).count()
                     
                     completed_count = session.query(EventModel).filter(
                         EventModel.project_id == proj["id"],
                         EventModel.status == "COMPLETED",
-                        EventModel.is_template == False
+                        EventModel.is_template == False,
+                        EventModel.parent_routine_id.is_(None),
+                        EventModel.routine_batch_id.is_(None)
                     ).count()
                     
                     proj["total_tasks"] = task_count
                     proj["completed_tasks"] = completed_count
+                    
+                    # Populate new fields
+                    proj["one_off_tasks_total"] = task_count
+                    proj["one_off_tasks_completed"] = completed_count
+                    
+                    # Calculate routine stats
+                    routines = session.query(EventModel).filter(
+                        EventModel.project_id == proj["id"],
+                        EventModel.is_template == True
+                    ).all()
+                    
+                    completed_executions = sum(r.habit_completed_count or 0 for r in routines)
+                    total_executions = sum(r.habit_total_count or 0 for r in routines)
+                    
+                    proj["routine_stats"] = {
+                        "total_executions": total_executions,
+                        "completed_executions": completed_executions
+                    }
             
             return result
 
@@ -1762,7 +1784,49 @@ class DatabaseService:
                 ProjectModel.id == project_id,
                 ProjectModel.user_id == user_id
             ).first()
-            return project.to_dict() if project else None
+            
+            if not project:
+                return None
+                
+            result = project.to_dict()
+            
+            # Calculate stats
+            # Count tasks (exclude templates AND routine/habit instances)
+            task_count = session.query(EventModel).filter(
+                EventModel.project_id == project_id,
+                EventModel.is_template == False,
+                EventModel.parent_routine_id.is_(None),
+                EventModel.routine_batch_id.is_(None)
+            ).count()
+            
+            completed_count = session.query(EventModel).filter(
+                EventModel.project_id == project_id,
+                EventModel.status == "COMPLETED",
+                EventModel.is_template == False,
+                EventModel.parent_routine_id.is_(None),
+                EventModel.routine_batch_id.is_(None)
+            ).count()
+            
+            result["one_off_tasks_total"] = task_count
+            result["one_off_tasks_completed"] = completed_count
+            result["total_tasks"] = task_count
+            result["completed_tasks"] = completed_count
+            
+            # Calculate routine stats
+            routines = session.query(EventModel).filter(
+                EventModel.project_id == project_id,
+                EventModel.is_template == True
+            ).all()
+            
+            completed_executions = sum(r.habit_completed_count or 0 for r in routines)
+            total_executions = sum(r.habit_total_count or 0 for r in routines)
+            
+            result["routine_stats"] = {
+                "total_executions": total_executions,
+                "completed_executions": completed_executions
+            }
+            
+            return result
 
     async def update_project(
         self,

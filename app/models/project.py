@@ -79,9 +79,17 @@ class Project(BaseModel):
     updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update timestamp")
     
     # Statistics (computed/cached)
-    total_tasks: int = Field(default=0, description="Total tasks in this project")
-    completed_tasks: int = Field(default=0, description="Completed tasks count")
+    total_tasks: int = Field(default=0, description="Total tasks in this project (Legacy - use one_off_tasks_total)")
+    completed_tasks: int = Field(default=0, description="Completed tasks count (Legacy - use one_off_tasks_completed)")
     total_focus_minutes: int = Field(default=0, description="Total focus time spent")
+    
+    # Enhanced Statistics
+    one_off_tasks_total: int = Field(default=0, description="Total one-off tasks")
+    one_off_tasks_completed: int = Field(default=0, description="Completed one-off tasks")
+    routine_stats: Dict[str, int] = Field(
+        default_factory=lambda: {"total_executions": 0, "completed_executions": 0},
+        description="Routine execution stats"
+    )
     
     class Config:
         json_schema_extra = {

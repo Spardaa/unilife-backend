@@ -1048,6 +1048,40 @@ def register_all_tools():
 
 # ============ Tool 实现函数 ============
 
+# 时区处理辅助函数
+import pytz
+
+def parse_time_with_timezone(time_str: Optional[str], default_tz: str = "Asia/Shanghai") -> Optional[datetime]:
+    """
+    解析时间字符串，确保返回带时区的datetime
+    
+    关键修复：AI生成的时间字符串通常不带时区信息，
+    如 "2026-02-07T10:00:00"，需要将其解释为用户本地时区时间，
+    而不是UTC时间。
+    
+    Args:
+        time_str: ISO 8601格式的时间字符串
+        default_tz: 默认时区，用于naive datetime
+    
+    Returns:
+        带时区的datetime，或None
+    """
+    if not time_str:
+        return None
+    
+    try:
+        dt = datetime.fromisoformat(time_str)
+        
+        # 如果是naive datetime（无时区），假设是用户本地时区
+        if dt.tzinfo is None:
+            user_tz = pytz.timezone(default_tz)
+            dt = user_tz.localize(dt)
+        
+        return dt
+    except Exception as e:
+        print(f"[parse_time_with_timezone] Error parsing '{time_str}': {e}")
+        return None
+
 async def tool_create_event(
     user_id: str,
     title: str,
@@ -1077,18 +1111,19 @@ async def tool_create_event(
     这些字段会在db.py中被过滤掉，不会保存到数据库。
     """
 
-    # 解析时间
-    start_dt = datetime.fromisoformat(start_time) if start_time else None
-    end_dt = datetime.fromisoformat(end_time) if end_time else None
+    # 解析时间（使用时区感知的辅助函数）
+    start_dt = parse_time_with_timezone(start_time)
+    end_dt = parse_time_with_timezone(end_time)
     
     # 解析日期（用于配合 time_period）
+    # event_date 通常只包含日期部分，不需要时区处理
     event_dt_val = None
     if event_date:
         try:
             # 尝试 ISO 格式 (YYYY-MM-DD)
             # 如果是带时间的 ISO 格式，只取日期部分
             if "T" in event_date:
-                event_dt_val = datetime.fromisoformat(event_date)
+                event_dt_val = datetime.fromisoformat(event_date.split("T")[0])
             else:
                 # 假设是 YYYY-MM-DD
                 event_dt_val = datetime.strptime(event_date, "%Y-%m-%d")
@@ -1299,9 +1334,9 @@ async def tool_update_event(
     if title:
         update_data["title"] = title
     if start_time:
-        update_data["start_time"] = datetime.fromisoformat(start_time)
+        update_data["start_time"] = parse_time_with_timezone(start_time)
     if end_time:
-        update_data["end_time"] = datetime.fromisoformat(end_time)
+        update_data["end_time"] = parse_time_with_timezone(end_time)
     
     if time_period:
         update_data["time_period"] = time_period
@@ -1309,7 +1344,7 @@ async def tool_update_event(
     if event_date:
         try:
             if "T" in event_date:
-                update_data["event_date"] = datetime.fromisoformat(event_date)
+                update_data["event_date"] = datetime.fromisoformat(event_date.split("T")[0])
             else:
                 update_data["event_date"] = datetime.strptime(event_date, "%Y-%m-%d")
         except:

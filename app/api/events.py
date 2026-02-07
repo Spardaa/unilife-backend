@@ -24,6 +24,7 @@ async def get_events(
     event_type: Optional[EventType] = Query(None, description="Filter by event type"),
     category: Optional[Category] = Query(None, description="Filter by category"),
     time_period: Optional[TimePeriod] = Query(None, description="Filter by time period (ANYTIME/MORNING/AFTERNOON/NIGHT)"),
+    project_id: Optional[str] = Query(None, description="Filter by project ID"),
     include_templates: bool = Query(True, description="Include template events in response"),
     limit: int = Query(100, ge=1, le=500, description="Maximum number of events to return")
 ):
@@ -40,11 +41,7 @@ async def get_events(
     - Event type (schedule, deadline, floating, habit, reminder)
     - Category (STUDY, WORK, SOCIAL, LIFE, HEALTH)
     - Time period (ANYTIME, MORNING, AFTERNOON, NIGHT)
-
-    New Architecture:
-    - Template events (is_template=True) define repeat patterns
-    - Client uses templates to virtually expand recurring events
-    - Instances are created on-demand when user marks complete or edits
+    - Project ID
     """
     filters = {}
     if status:
@@ -55,6 +52,8 @@ async def get_events(
         filters["category"] = category.value
     if time_period:
         filters["time_period"] = time_period.value
+    if project_id:
+        filters["project_id"] = project_id
 
     # Get instances (exclude templates)
     instances = await db_service.get_events(
@@ -294,6 +293,11 @@ async def update_event(
 
     # Build update data with only non-None values
     update_data = event.model_dump(exclude_unset=True)
+    
+    # Debug: Log what fields are being updated
+    print(f"📝 UPDATE_EVENT: event_id={event_id}")
+    print(f"📝 UPDATE_EVENT: update_data keys: {list(update_data.keys())}")
+    print(f"📝 UPDATE_EVENT: event_date={update_data.get('event_date')}, project_id={update_data.get('project_id')}")
 
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
