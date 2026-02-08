@@ -182,13 +182,14 @@ class NotificationService:
                 if platform:
                     query = query.filter(DeviceDB.platform == platform.value)
                 devices = query.all()
+                print(f"[Notification] Found {len(devices)} active devices for user {user_id}")
 
             if not devices:
                 # No devices found, create a failed record
                 record = NotificationRecord(
                     user_id=user_id,
                     device_id=device_id,
-                    platform=platform.value if platform else "unknown",
+                    platform=platform.value if platform else NotificationPlatform.UNKNOWN.value,
                     type=notification_type,
                     priority=priority,
                     payload=payload,
@@ -293,6 +294,141 @@ class NotificationService:
     ) -> NotificationRecord:
         """
         Send notification via Apple Push Notification Service (APNs)
+        """
+        try:
+            from app.config import settings
+            import time
+            import json
+            import asyncio
+            from pathlib import Path
+            from jose import jwt
+
+            # Check if APNs is configured
+            if not all([settings.apns_key_id, settings.apns_team_id, settings.apns_key_path, settings.apns_bundle_id]):
+                print("[APNs] Configuration missing, falling back to mock send.")
+                return await self._send_apns_mock(record, device)
+
+            # Resolve key path
+            key_path = Path(settings.apns_key_path)
+            if not key_path.exists():
+                # Try relative to project root if not found
+                root_path = Path.cwd()
+                potential_path = root_path / settings.apns_key_path
+                if potential_path.exists():
+                    key_path = potential_path
+                else:
+                    # Try removing first component if it's 'unilife-backend'
+                    parts = list(Path(settings.apns_key_path).parts)
+                    if parts and parts[0] == "unilife-backend":
+                        potential_path = root_path / Path(*parts[1:])
+                        if potential_path.exists():
+                            key_path = potential_path
+            
+            if not key_path.exists():
+                record.status = NotificationStatus.FAILED
+                record.error_message = f"APNs key file not found at {settings.apns_key_path}"
+                print(f"[APNs] Key file not found: {key_path}")
+                return self._save_record(record)
+
+            # Generate JWT
+            with open(key_path, "r") as f:
+                secret = f.read()
+
+            algorithm = "ES256"
+            headers = {
+                "alg": algorithm,
+                "kid": settings.apns_key_id
+            }
+            payload_jwt = {
+                "iss": settings.apns_team_id,
+                "iat": int(time.time())
+            }
+            
+            # Using python-jose
+            token = jwt.encode(payload_jwt, secret, algorithm=algorithm, headers=headers)
+
+            # Determine endpoint
+            endpoint = "https://api.development.push.apple.com" if settings.apns_use_sandbox else "https://api.push.apple.com"
+            url = f"{endpoint}/3/device/{device.token}"
+
+            # Prepare payload
+            aps = {
+                "alert": {
+                    "title": record.payload.title,
+                    "body": record.payload.body,
+                },
+                "sound": record.payload.sound or "default",
+                "badge": record.payload.badge or 1
+            }
+            
+            # Add custom data
+            full_payload = {"aps": aps}
+            if record.payload.data:
+                full_payload.update(record.payload.data)
+                
+            # Add platform-specific fields
+            if record.payload.category:
+                aps["category"] = record.payload.category
+
+            print(f"[APNs] Sending to {device.token[:8]}... via curl")
+            
+            cmd = [
+                "curl",
+                "--http2",
+                "-s",  # Silent
+                "-o", "/dev/null", # Output to null
+                "-w", "%{http_code}", # Write http code
+                "-d", json.dumps(full_payload),
+                "-H", f"apns-topic: {settings.apns_bundle_id}",
+                "-H", "apns-push-type: alert",
+                "-H", "content-type: application/json",
+                "-H", f"authorization: bearer {token}",
+                url
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            status_code_str = stdout.decode().strip()
+            stderr_output = stderr.decode().strip() if stderr else ""
+            
+            # Handle empty status code (connection failure)
+            if not status_code_str or status_code_str == "000":
+                record.status = NotificationStatus.FAILED
+                record.error_message = f"APNs Connection Failed: {stderr_output or 'No response from server'}"
+                print(f"[APNs] Connection failed. stderr: {stderr_output}")
+                print(f"[APNs] Command was: curl --http2 ... {url}")
+            elif status_code_str == "200":
+                record.status = NotificationStatus.SENT
+                record.sent_at = datetime.utcnow()
+                print(f"[APNs] Sent successfully via curl. Status: 200. Token: {device.token[:10]}...")
+            else:
+                record.status = NotificationStatus.FAILED
+                record.error_message = f"APNs Error {status_code_str}: {stderr_output or 'Unknown error'}"
+                print(f"[APNs] Failed to send via curl. Status: {status_code_str}. Error: {stderr_output}")
+                print(f"[APNs] Command: {' '.join(cmd)}")
+
+            return self._save_record(record)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            record.status = NotificationStatus.FAILED
+            record.error_message = f"Internal Error: {str(e)}"
+            return self._save_record(record)
+
+    async def _send_apns_mock(
+        self,
+        record: NotificationRecord,
+        device: DeviceDB
+    ) -> NotificationRecord:
+        """
+        Send notification via Apple Push Notification Service (APNs)
 
         Note: This is a simplified implementation for development.
         Production requires APNs certificate/token authentication.
@@ -362,11 +498,56 @@ class NotificationService:
                 retry_count=record.retry_count
             )
 
-            session.add(db_record)
+            session.merge(db_record)
             session.commit()
-            session.refresh(db_record)
+            
+            # Re-query to ensure we have latest state
+            refreshed = session.query(NotificationRecordDB).get(record.id)
+            return NotificationRecord(**refreshed.to_dict()) if refreshed else record
 
-            return NotificationRecord(**db_record.to_dict())
+    async def process_pending_notifications(self):
+        """Process pending notifications scheduled for now or past"""
+        self._ensure_initialized()
+        
+        # 1. Get pending records
+        pending_records = []
+        with self.get_session() as session:
+            now = datetime.utcnow()
+            rows = session.query(NotificationRecordDB).filter(
+                NotificationRecordDB.status == NotificationStatus.PENDING.value,
+                NotificationRecordDB.scheduled_for <= now
+            ).all()
+            pending_records = [NotificationRecord(**r.to_dict()) for r in rows]
+            
+        if not pending_records:
+            return
+            
+        print(f"[Notification] Processing {len(pending_records)} pending notifications")
+        
+        # 2. Process each record
+        for record in pending_records:
+            try:
+                # Get device info
+                device = None
+                with self.get_session() as session:
+                    if record.device_id:
+                        device = session.query(DeviceDB).filter(DeviceDB.id == record.device_id).first()
+                
+                if device:
+                    print(f"[Notification] Sending pending notification {record.id} to device {device.id}")
+                    # Send (will update status and save)
+                    await self._send_to_device(record, device)
+                else:
+                    print(f"[Notification] Device {record.device_id} not found for pending notification {record.id}")
+                    record.status = NotificationStatus.FAILED
+                    record.error_message = "Target device not found"
+                    self._save_record(record)
+                    
+            except Exception as e:
+                print(f"[Notification] Error processing pending record {record.id}: {e}")
+                record.status = NotificationStatus.FAILED
+                record.error_message = str(e)
+                self._save_record(record)
 
     def get_notification_history(
         self,

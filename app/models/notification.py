@@ -13,6 +13,7 @@ class NotificationPlatform(str, Enum):
     APNS = "apns"       # Apple Push Notification Service (iOS)
     FCM = "fcm"         # Firebase Cloud Messaging (Android)
     WEB = "web"         # Web Push (Web Push API)
+    UNKNOWN = "unknown" # Unknown or no specific platform
 
 
 class NotificationType(str, Enum):

@@ -7,6 +7,10 @@ from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 import uuid
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.models.user import UserPreferences, EnergyProfile
@@ -176,18 +180,31 @@ class EventModel(Base):
     anchor_time = Column(DateTime, nullable=True)  # Hard deadline time
     energy_cost = Column(String, nullable=True)  # HIGH/NORMAL/LOW for AI scheduling
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
+    def to_dict(self, tz=None) -> Dict[str, Any]:
+        """Convert to dictionary with optional timezone conversion"""
+        def convert_dt(dt):
+            if dt is None:
+                return None
+            if tz:
+                # If naive, assume it's ALREADY in user's local timezone
+                # (not UTC - this matches how data is stored via parse_time_with_timezone)
+                if dt.tzinfo is None:
+                    import pytz
+                    local_tz = pytz.timezone("Asia/Shanghai")
+                    dt = local_tz.localize(dt)
+                return dt.astimezone(tz).isoformat()
+            return dt.isoformat()
+
         return {
             "id": self.id,
             "user_id": self.user_id,
             "title": self.title,
             "description": self.description,
             "notes": self.notes,
-            "event_date": self.event_date.isoformat() if self.event_date else None,
+            "event_date": convert_dt(self.event_date),
             "time_period": self.time_period,
-            "start_time": self.start_time.isoformat() if self.start_time else None,
-            "end_time": self.end_time.isoformat() if self.end_time else None,
+            "start_time": convert_dt(self.start_time),
+            "end_time": convert_dt(self.end_time),
             "duration": self.duration,
             "energy_required": self.energy_required,  # DEPRECATED
             "urgency": self.urgency,
@@ -226,7 +243,7 @@ class EventModel(Base):
             "habit_total_count": self.habit_total_count,
             # Project association
             "project_id": self.project_id,
-            "anchor_time": self.anchor_time.isoformat() if self.anchor_time else None,
+            "anchor_time": convert_dt(self.anchor_time),
             "energy_cost": self.energy_cost,
         }
 
@@ -436,9 +453,46 @@ class DatabaseService:
         if not self._initialized:
             self.initialize()
 
+    def _get_user_tz(self, session: Session, user_id: str):
+        """Get user timezone object"""
+        if not user_id:
+            return None
+        try:
+            user = session.query(UserModel).filter(UserModel.id == user_id).first()
+            if user and user.timezone:
+                return ZoneInfo(user.timezone)
+        except Exception as e:
+            print(f"Error getting timezone for user {user_id}: {e}")
+        return None
+
     def _get_utc_timezone(self):
         """Get UTC timezone"""
         return timezone.utc
+
+    def _convert_to_local_naive(self, dt, default_tz: str = "Asia/Shanghai"):
+        """
+        Convert datetime to local naive datetime for storage.
+        
+        This ensures all stored datetimes are in local timezone (naive),
+        which matches the 'naive=local' assumption in to_dict().
+        
+        - If dt is None, returns None
+        - If dt is already naive, assumes it's local and returns as-is
+        - If dt is timezone-aware (e.g., UTC from frontend), converts to local and strips tz
+        """
+        if dt is None:
+            return None
+        
+        if dt.tzinfo is not None:
+            # Has timezone info - convert to local timezone
+            import pytz
+            local_tz = pytz.timezone(default_tz)
+            local_dt = dt.astimezone(local_tz)
+            # Return as naive datetime (strip timezone)
+            return local_dt.replace(tzinfo=None)
+        else:
+            # Already naive - assume it's already local
+            return dt
 
     # ============ Event Operations ============
 
@@ -466,6 +520,12 @@ class DatabaseService:
                     from datetime import datetime
                     event_data["event_date"] = datetime.fromisoformat(event_data["event_date"].replace('Z', '+00:00'))
 
+            # Convert UTC timestamps to local naive datetime for consistent storage
+            # This ensures 'naive=local' assumption in to_dict() works correctly
+            event_data["start_time"] = self._convert_to_local_naive(event_data.get("start_time"))
+            event_data["end_time"] = self._convert_to_local_naive(event_data.get("end_time"))
+            event_data["event_date"] = self._convert_to_local_naive(event_data.get("event_date"))
+
             # Convert datetime objects to ISO format strings in energy_consumption
             if "energy_consumption" in event_data and event_data["energy_consumption"] is not None:
                 ec = event_data["energy_consumption"]
@@ -476,8 +536,8 @@ class DatabaseService:
                         else:
                             ec["evaluated_at"] = str(ec["evaluated_at"])
 
-            # Debug: Print event_date
-            print(f"📝 DB: Creating event with event_date: {event_data.get('event_date')}")
+            # Debug: Print event_date and start_time
+            print(f"📝 DB: Creating event with event_date: {event_data.get('event_date')}, start_time: {event_data.get('start_time')}")
 
             # Filter out fields that don't exist in the database model
             # These fields are in the Pydantic Event model but not yet in the database table
@@ -500,7 +560,8 @@ class DatabaseService:
             session.refresh(event)
 
             # Merge with the original data (including unsupported fields) for return
-            result = event.to_dict()
+            tz = self._get_user_tz(session, event_data.get("user_id"))
+            result = event.to_dict(tz=tz)
             for key in unsupported_fields:
                 if key in event_data:
                     result[key] = event_data[key]
@@ -564,7 +625,21 @@ class DatabaseService:
                 nullslast(EventModel.event_date),
                 nullslast(EventModel.start_time)
             ).limit(limit).all()
-            return [event.to_dict() for event in results]
+            tz = self._get_user_tz(session, user_id)
+            return [event.to_dict(tz=tz) for event in results]
+
+    async def get_events_for_date(self, user_id: str, target_date: date) -> List[Dict[str, Any]]:
+        """Get events for a specific date"""
+        from datetime import datetime
+        start_dt = datetime.combine(target_date, datetime.min.time())
+        end_dt = datetime.combine(target_date, datetime.max.time())
+        
+        return await self.get_events(
+            user_id=user_id,
+            start_date=start_dt,
+            end_date=end_dt,
+            limit=100
+        )
 
     async def get_event(self, event_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific event by ID"""
@@ -574,7 +649,8 @@ class DatabaseService:
                 EventModel.id == event_id,
                 EventModel.user_id == user_id
             ).first()
-            return event.to_dict() if event else None
+            tz = self._get_user_tz(session, user_id)
+            return event.to_dict(tz=tz) if event else None
 
     async def get_event_instance(self, parent_id: str, event_date: date) -> Optional[Dict[str, Any]]:
         """
@@ -596,7 +672,12 @@ class DatabaseService:
                 EventModel.parent_routine_id == parent_id,
                 func.date(EventModel.event_date) == event_date
             ).first()
-            return event.to_dict() if event else None
+            # Note: We need user_id to get timezone, but parent_id doesn't give it directly.
+            # However, event has user_id.
+            tz = None
+            if event:
+                tz = self._get_user_tz(session, event.user_id)
+            return event.to_dict(tz=tz) if event else None
 
     async def get_recurring_templates(self, user_id: str) -> List[Dict[str, Any]]:
         """
@@ -617,7 +698,8 @@ class DatabaseService:
                 EventModel.user_id == user_id,
                 EventModel.is_template == True
             ).all()
-            return [event.to_dict() for event in events]
+            tz = self._get_user_tz(session, user_id)
+            return [event.to_dict(tz=tz) for event in events]
 
     async def update_event(
         self,
@@ -648,6 +730,14 @@ class DatabaseService:
 
             # Capture old status before update
             old_status = event.status
+
+            # Convert UTC timestamps to local naive datetime for consistent storage
+            if "start_time" in update_data:
+                update_data["start_time"] = self._convert_to_local_naive(update_data["start_time"])
+            if "end_time" in update_data:
+                update_data["end_time"] = self._convert_to_local_naive(update_data["end_time"])
+            if "event_date" in update_data:
+                update_data["event_date"] = self._convert_to_local_naive(update_data["event_date"])
 
             # Update fields
             for key, value in update_data.items():
@@ -726,7 +816,8 @@ class DatabaseService:
             event.updated_at = datetime.utcnow()
             session.commit()
             session.refresh(event)
-            return event.to_dict()
+            tz = self._get_user_tz(session, user_id)
+            return event.to_dict(tz=tz)
 
     async def delete_event(self, event_id: str, user_id: str) -> bool:
         """Delete an event"""
@@ -791,7 +882,9 @@ class DatabaseService:
                 # Check for overlap
                 if start_time_utc and end_time_utc and event_start_utc and event_end_utc:
                     if (start_time_utc < event_end_utc) and (end_time_utc > event_start_utc):
-                        conflicts.append(event.to_dict())
+                        # Use local timezone for return if possible
+                        tz = self._get_user_tz(session, user_id)
+                        conflicts.append(event.to_dict(tz=tz))
 
             return conflicts
 
@@ -1311,9 +1404,15 @@ class DatabaseService:
 
             # Refresh all events and return as dicts
             results = []
+            # Get timezone from first event's user_id
+            tz = None
+            if created_events:
+                user_id = created_events[0].user_id
+                if user_id:
+                    tz = self._get_user_tz(session, user_id)
             for event in created_events:
                 session.refresh(event)
-                results.append(event.to_dict())
+                results.append(event.to_dict(tz=tz))
 
             return results
 
@@ -1421,7 +1520,7 @@ class DatabaseService:
                         "completed_instances": 0,
                         "pending_instances": 0,
                         "cancelled_instances": 0,
-                        "template": event.to_dict()
+                        "template": event.to_dict(tz=self._get_user_tz(session, user_id))
                     }
 
                 batches[batch_id]["total_instances"] += 1
@@ -1525,7 +1624,8 @@ class DatabaseService:
             session.add(routine)
             session.commit()
             session.refresh(routine)
-            return routine.to_dict()
+            tz = self._get_user_tz(session, user_id)
+            return routine.to_dict(tz=tz)
 
     async def get_routines(self, user_id: str, active_only: bool = True) -> List[Dict[str, Any]]:
         """Get all routines for a user"""
@@ -1543,7 +1643,8 @@ class DatabaseService:
                 pass
 
             routines = query.order_by(EventModel.created_at.desc()).all()
-            return [r.to_dict() for r in routines]
+            tz = self._get_user_tz(session, user_id)
+            return [r.to_dict(tz=tz) for r in routines]
 
     async def get_active_routines_for_date(
         self,
@@ -1573,7 +1674,9 @@ class DatabaseService:
             target_date_str = target_date.strftime("%Y-%m-%d")
 
             for routine in routines:
-                routine_dict = routine.to_dict()
+                # Use timezone for routine dict
+                tz = self._get_user_tz(session, user_id)
+                routine_dict = routine.to_dict(tz=tz)
                 repeat_rule = routine_dict.get("repeat_rule", {})
                 completed_dates = routine_dict.get("routine_completed_dates", [])
 
@@ -1645,7 +1748,8 @@ class DatabaseService:
             session.commit()
             session.refresh(routine)
 
-            return routine.to_dict()
+            tz = self._get_user_tz(session, user_id)
+            return routine.to_dict(tz=tz)
 
     async def get_routine_completion_stats(
         self,

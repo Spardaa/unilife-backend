@@ -28,6 +28,16 @@ class UserProfile(BaseModel):
         default_factory=lambda: {
             "conflict_strategy": "ask",  # ask / prioritize_urgent / merge
             "time_style": "flexible",    # flexible / structured
+            # 作息时间配置
+            "wake_time": "08:00",        # 起床时间 (HH:MM)
+            "sleep_time": "22:00",       # 睡觉时间 (HH:MM)
+            # 通知开关
+            "morning_briefing_enabled": True,    # 早安简报
+            "afternoon_checkin_enabled": True,   # 午间检查
+            "evening_switch_enabled": True,      # 晚间切换
+            "closing_ritual_enabled": True,      # 睡前仪式
+            "event_reminders_enabled": True,     # 日程提醒
+            "event_reminder_minutes": 15,        # 提前提醒时间（分钟）
         },
         description="用户偏好字典"
     )
@@ -76,12 +86,12 @@ class UserProfile(BaseModel):
         """从字典创建"""
         # 兼容旧格式
         if "relationships" in data or "identity" in data:
-            # 从旧格式迁移
+            # 从旧格式迁移，但尽可能保留现有数据
             return cls(
                 user_id=data.get("user_id", ""),
-                preferences={"conflict_strategy": "ask", "time_style": "flexible"},
-                explicit_rules=[],
-                learned_patterns={}
+                preferences=data.get("preferences", {"conflict_strategy": "ask", "time_style": "flexible"}),
+                explicit_rules=data.get("explicit_rules", []),
+                learned_patterns=data.get("learned_patterns", {})
             )
         return cls(**data)
 

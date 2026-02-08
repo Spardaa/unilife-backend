@@ -9,6 +9,7 @@ from app.schemas.users import (
     UserResponse, UserUpdate, EnergyProfileUpdate,
     UserProfileResponse, UserStatsResponse
 )
+from app.schemas.notification_settings import NotificationSettings
 from app.services.db import db_service
 from app.services.profile_service import profile_service
 from app.services.decision_profile_service import decision_profile_service
@@ -18,7 +19,7 @@ router = APIRouter()
 
 
 @router.get("/users/me", response_model=UserResponse)
-async def get_current_user(user_id: str = Depends(get_current_user)):
+async def read_users_me(user_id: str = Depends(get_current_user)):
     """
     Get current user information
 
@@ -195,9 +196,79 @@ async def get_user_stats(user_id: str = Depends(get_current_user)):
         created_at=user.get("created_at")
     )
 
-
 # Note: Register and login endpoints are handled by /api/v1/auth router
 # These are kept here for potential future use but currently return 404
+
+# ==================== Notification Settings ====================
+
+@router.get("/users/me/notification-settings", response_model=NotificationSettings)
+async def get_notification_settings(user_id: str = Depends(get_current_user)):
+    """
+    获取用户通知设置
+
+    返回用户的作息时间和通知偏好配置。
+    """
+    # 获取用户信息
+    user = await db_service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 使用 user_id 字段查找 profile
+    user_field_id = user.get("user_id") or user_id
+
+    # 获取 UserProfile
+    user_profile = profile_service.get_or_create_profile(user_field_id)
+
+    # 从 preferences 中提取通知设置
+    return NotificationSettings.from_preferences(user_profile.preferences)
+
+
+@router.put("/users/me/notification-settings", response_model=NotificationSettings)
+async def update_notification_settings(
+    settings: NotificationSettings,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    更新用户通知设置
+    
+    更新作息时间和通知偏好配置。
+    
+    **示例请求:**
+    ```json
+    {
+        "wake_time": "07:30",
+        "sleep_time": "23:00",
+        "morning_briefing_enabled": true,
+        "afternoon_checkin_enabled": true,
+        "evening_switch_enabled": true,
+        "closing_ritual_enabled": true,
+        "event_reminders_enabled": true,
+        "event_reminder_minutes": 30
+    }
+    ```
+    """
+    # 获取用户信息
+    user = await db_service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 使用 user_id 字段查找 profile
+    user_field_id = user.get("user_id") or user_id
+
+    # 获取现有 UserProfile
+    user_profile = profile_service.get_or_create_profile(user_field_id)
+
+    # 合并新的通知设置到 preferences
+    new_preferences = settings.to_preferences_dict()
+    for key, value in new_preferences.items():
+        user_profile.update_preference(key, value)
+
+    # 保存更新后的 profile
+    profile_service.save_profile(user_field_id, user_profile)
+
+    return settings
+
+
 @router.post("/users/register", include_in_schema=False)
 async def register_user():
     """Register a new user - use /api/v1/auth/register instead"""

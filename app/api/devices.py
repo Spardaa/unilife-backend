@@ -284,6 +284,20 @@ async def register_device(
     If a device with the same device_id or token already exists,
     it will be updated instead of creating a duplicate.
     """
+    print(f"[Device] Registering device token={request.token[:20]}... for user_id={user_id}")
+    device = await device_service.register_device(user_id, request)
+    return DeviceResponse(**device.to_dict())
+
+
+# Alias for POST /devices (same as /devices/register)
+@router.post("/devices", response_model=DeviceResponse, status_code=201)
+async def register_device_alt(
+    request: DeviceRegisterRequest,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Register a device for push notifications (alias for /devices/register)
+    """
     device = await device_service.register_device(user_id, request)
     return DeviceResponse(**device.to_dict())
 

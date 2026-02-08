@@ -276,3 +276,176 @@ async def test_notification(
         payload=payload,
         notification_type=NotificationType.CUSTOM
     )
+
+
+# ==================== Debug Endpoints ====================
+
+@router.post("/notifications/debug/trigger/{type}")
+async def trigger_daily_notification(
+    type: str,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Trigger a specific daily notification for debugging (Morning, Afternoon, Evening, Closing)
+    
+    Valid types:
+    - morning_briefing
+    - afternoon_checkin
+    - evening_switch
+    - closing_ritual
+    """
+    from app.scheduler.daily_notifications import daily_notification_scheduler
+    
+    result = False
+    
+    if type == "morning_briefing":
+        result = await daily_notification_scheduler.send_morning_briefing(user_id)
+    elif type == "afternoon_checkin":
+        result = await daily_notification_scheduler.send_afternoon_checkin(user_id)
+    elif type == "evening_switch":
+        result = await daily_notification_scheduler.send_evening_switch(user_id)
+    elif type == "closing_ritual":
+        result = await daily_notification_scheduler.send_closing_ritual(user_id)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid notification type")
+        
+    return {
+        "type": type,
+        "triggered": result,
+        "message": "Notification triggered successfully" if result else "Conditions not met or disabled"
+    }
+
+
+@router.post("/notifications/debug/last_device")
+async def trigger_test_to_last_device():
+    """
+    Debug: Send test notification to the most recently active device (ignores auth)
+    
+    Useful for testing when you don't know the exact user ID of the device.
+    """
+    from app.api.devices import device_service
+    from sqlalchemy import text
+    
+    # Direct DB query to find latest device
+    db = device_service.get_session()
+    try:
+        # Get latest device
+        row = db.execute(text(
+            "SELECT user_id, token, platform FROM devices ORDER BY updated_at DESC LIMIT 1"
+        )).fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="No devices found in database")
+            
+        user_id = row[0]
+        token = row[1]
+        platform_str = row[2]
+        
+        print(f"[Debug] Found latest device for user {user_id}, token={token[:10]}...")
+        
+        # Send test notification
+        payload = NotificationPayload(
+            title="Debug Test",
+            body=f"This is a debug message for user {user_id}",
+            sound="default"
+        )
+        
+        # Manually construct record and send
+        # We use standard send_notification but specify user_id
+        return await notification_service.send_notification(
+            user_id=user_id,
+            payload=payload,
+            notification_type=NotificationType.CUSTOM
+        )
+        
+    finally:
+        db.close()
+
+
+@router.post("/notifications/debug/schedule-last-device")
+async def schedule_test_last_device(minutes: int = 1):
+    """
+    Debug: Schedule a test notification for the most recently active device (ignores auth)
+    
+    Verifies the background poller.
+    """
+    from app.api.devices import device_service
+    from sqlalchemy import text
+    from datetime import datetime, timedelta
+    
+    db = device_service.get_session()
+    try:
+        row = db.execute(text(
+            "SELECT user_id FROM devices ORDER BY updated_at DESC LIMIT 1"
+        )).fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="No devices found")
+            
+        user_id = row[0]
+        scheduled_for = datetime.utcnow() + timedelta(minutes=minutes)
+        
+        print(f"[Debug] Scheduling test for {user_id} at {scheduled_for} (in {minutes} min)")
+        
+        payload = NotificationPayload(
+            title="Scheduled Test", 
+            body=f"This notification was scheduled {minutes} min ago.",
+            sound="default"
+        )
+        
+        return await notification_service.send_notification(
+            user_id=user_id,
+            payload=payload,
+            notification_type=NotificationType.CUSTOM,
+            scheduled_for=scheduled_for
+        )
+    finally:
+        db.close()
+
+
+@router.post("/notifications/debug/trigger-last-device/{type}")
+async def trigger_daily_notification_last_device(type: str):
+    """
+    Debug: Trigger daily notification for the most recently active device (ignores auth)
+    
+    Valid types: morning_briefing, afternoon_checkin, evening_switch, closing_ritual
+    """
+    from app.api.devices import device_service
+    from sqlalchemy import text
+    from app.scheduler.daily_notifications import daily_notification_scheduler
+    
+    # Direct DB query to find latest device
+    db = device_service.get_session()
+    try:
+        # Get latest device
+        row = db.execute(text(
+            "SELECT user_id FROM devices ORDER BY updated_at DESC LIMIT 1"
+        )).fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="No devices found in database")
+            
+        user_id = row[0]
+        print(f"[Debug] Triggering {type} for user {user_id}...")
+        
+        result = False
+        if type == "morning_briefing":
+            result = await daily_notification_scheduler.send_morning_briefing(user_id, force=True)
+        elif type == "afternoon_checkin":
+            result = await daily_notification_scheduler.send_afternoon_checkin(user_id, force=True)
+        elif type == "evening_switch":
+            result = await daily_notification_scheduler.send_evening_switch(user_id, force=True)
+        elif type == "closing_ritual":
+            result = await daily_notification_scheduler.send_closing_ritual(user_id, force=True)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid notification type")
+            
+        return {
+            "type": type,
+            "user_id": user_id,
+            "triggered": result,
+            "message": "Notification triggered successfully" if result else "Conditions not met or disabled (check server logs)"
+        }
+        
+    finally:
+        db.close()

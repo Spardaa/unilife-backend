@@ -32,6 +32,29 @@ class UserProfileService:
             bind=self.engine
         )
 
+        # Ensure table exists
+        self._ensure_table_exists()
+
+    def _ensure_table_exists(self):
+        """确保 user_profiles 表存在"""
+        try:
+            with self.engine.connect() as connection:
+                connection.execute(text("""
+                    CREATE TABLE IF NOT EXISTS user_profiles (
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        profile_data TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                """))
+                # 创建索引
+                connection.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id)
+                """))
+        except Exception as e:
+            print(f"[Profile Service] Error creating table: {e}")
+
     def get_session(self) -> Session:
         """获取数据库会话"""
         return self.SessionLocal()

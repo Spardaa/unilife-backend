@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     wechat_webhook_url: Optional[str] = None
     wechat_secret_key: Optional[str] = None
 
+    # APNs Push Notification Configuration
+    apns_key_id: Optional[str] = None          # Apple Push Notification Key ID
+    apns_team_id: Optional[str] = None         # Apple Developer Team ID
+    apns_key_path: Optional[str] = None        # Path to .p8 key file
+    apns_bundle_id: Optional[str] = None       # App bundle identifier
+    apns_use_sandbox: bool = True              # Use sandbox (development) or production
+
     # Logging
     log_level: str = "INFO"
 
