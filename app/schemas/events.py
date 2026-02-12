@@ -193,6 +193,11 @@ class EventResponse(EventBase):
     habit_total_count: int = Field(default=21, description="Total habit instances (default 21)")
     project_id: Optional[str] = Field(None, description="Associated Life Project ID")
 
+    # Virtual instance fields (NEW)
+    is_virtual: bool = Field(default=False, description="True if this is a virtually expanded instance (not in DB)")
+    template_id: Optional[str] = Field(None, description="Template ID for virtual instances")
+    subtasks: List[Dict[str, Any]] = Field(default_factory=list, description="Subtasks for this event")
+
     class Config:
         from_attributes = True
 

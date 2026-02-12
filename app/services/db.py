@@ -230,6 +230,7 @@ class EventModel(Base):
             "is_flexible": self.is_flexible,
             "preferred_time_slots": self.preferred_time_slots,
             "makeup_strategy": self.makeup_strategy,
+            "parent_event_id": self.parent_routine_id,  # Map parent_routine_id to parent_event_id for API
             "parent_routine_id": self.parent_routine_id,
             "routine_completed_dates": self.routine_completed_dates or [],
             # Energy consumption
@@ -237,8 +238,6 @@ class EventModel(Base):
             "is_physically_demanding": self.is_physically_demanding,
             "is_mentally_demanding": self.is_mentally_demanding,
             "is_template": self.is_template,
-            "parent_routine_id": self.parent_routine_id,
-            "routine_completed_dates": self.routine_completed_dates,
             "habit_completed_count": self.habit_completed_count,
             "habit_total_count": self.habit_total_count,
             # Project association

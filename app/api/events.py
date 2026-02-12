@@ -10,6 +10,7 @@ from app.schemas.events import (
     EventType, Category, TimePeriod, CreateInstanceRequest, EventsResponse
 )
 from app.services.db import db_service
+from app.services.virtual_expansion import virtual_expansion_service
 from app.middleware.auth import get_current_user
 
 router = APIRouter()
@@ -25,15 +26,19 @@ async def get_events(
     category: Optional[Category] = Query(None, description="Filter by category"),
     time_period: Optional[TimePeriod] = Query(None, description="Filter by time period (ANYTIME/MORNING/AFTERNOON/NIGHT)"),
     project_id: Optional[str] = Query(None, description="Filter by project ID"),
-    include_templates: bool = Query(True, description="Include template events in response"),
-    limit: int = Query(100, ge=1, le=500, description="Maximum number of events to return")
+    include_templates: bool = Query(False, description="Include template events in response (deprecated, kept for compatibility)"),
+    expand_virtual: bool = Query(True, description="Expand recurring templates into virtual instances"),
+    limit: int = Query(500, ge=1, le=1000, description="Maximum number of events to return")
 ):
     """
     Get all events for the authenticated user with optional filters.
 
+    NEW: Returns virtual instances for recurring events by default.
+    Virtual instances are computed on-demand and NOT persisted to database.
+
     Returns a structured response with:
-    - instances: Real event instances (created/interacted with)
-    - templates: Template events for virtual expansion (client-side expands these)
+    - instances: Real event instances + virtual instances (if expand_virtual=True)
+    - templates: Template events (only if include_templates=True)
 
     Supports filtering by:
     - Date range (start_date, end_date)
@@ -43,6 +48,8 @@ async def get_events(
     - Time period (ANYTIME, MORNING, AFTERNOON, NIGHT)
     - Project ID
     """
+    from datetime import timedelta
+
     filters = {}
     if status:
         filters["status"] = status.value
@@ -55,7 +62,18 @@ async def get_events(
     if project_id:
         filters["project_id"] = project_id
 
-    # Get instances (exclude templates)
+    # Determine date range for expansion
+    # If no range specified, use current month
+    if not start_date or not end_date:
+        now = datetime.utcnow()
+        if not start_date:
+            start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if not end_date:
+            # End of current month
+            next_month = start_date.replace(day=28) + timedelta(days=4)
+            end_date = next_month.replace(day=1) - timedelta(seconds=1)
+
+    # Get real instances (exclude templates)
     instances = await db_service.get_events(
         user_id=user_id,
         filters=filters,
@@ -67,6 +85,7 @@ async def get_events(
     # Filter out templates from instances
     real_instances = [evt for evt in instances if not evt.get("is_template")]
 
+    # Validate real instances
     validated_instances = []
     for event in real_instances:
         try:
@@ -80,26 +99,42 @@ async def get_events(
             else:
                 print(f"❌ Skipping invalid event {event.get('id')}")
 
-    # Get templates if requested
-    templates = []
+    # Expand virtual instances if requested
+    virtual_instances = []
+    if expand_virtual:
+        # Get all templates
+        templates = await db_service.get_recurring_templates(user_id)
+
+        # Expand within date range
+        virtual_dicts = virtual_expansion_service.expand_templates(
+            templates=templates,
+            real_instances=real_instances,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        # Convert to EventResponse
+        for v in virtual_dicts:
+            try:
+                virtual_instances.append(EventResponse(**v))
+            except Exception as e:
+                print(f"⚠️ Failed to validate virtual instance: {e}")
+
+    all_instances = validated_instances + virtual_instances
+
+    # For backward compatibility, include templates only if explicitly requested
+    templates_response = []
     if include_templates:
         template_events = await db_service.get_recurring_templates(user_id)
-
         for event in template_events:
             try:
-                templates.append(EventResponse(**event))
+                templates_response.append(EventResponse(**event))
             except Exception as e:
-                print(f"⚠️ Failed to validate template {event.get('id')}: {e}")
-                if "energy_consumption" in event:
-                    event_copy = event.copy()
-                    del event_copy["energy_consumption"]
-                    templates.append(EventResponse(**event_copy))
-                else:
-                    print(f"❌ Skipping invalid template {event.get('id')}")
+                print(f"⚠️ Failed to validate template: {e}")
 
     return EventsResponse(
-        instances=validated_instances,
-        templates=templates
+        instances=all_instances,
+        templates=templates_response
     )
 
 

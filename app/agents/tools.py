@@ -142,7 +142,7 @@ def register_all_tools():
     # 2. 查询事件工具
     tool_registry.register(
         name="query_events",
-        description="查询用户的日程事件。可以按日期、类别、状态等条件过滤。查询特定日期的日程时必须提供 event_date 参数。",
+        description="查询用户的日程事件。支持虚拟展开重复事件，查询特定日期时会自动包含该日期的重复日程实例（如每日习惯）。可以按日期、类别、状态等条件过滤。",
         parameters={
             "type": "object",
             "properties": {
@@ -1248,46 +1248,72 @@ async def tool_query_events(
     event_date: Optional[str] = None,
     category: Optional[str] = None,
     status: Optional[str] = None,
-    limit: int = 50
+    limit: int = 50,
+    expand_virtual: bool = True
 ) -> Dict[str, Any]:
-    """查询事件"""
+    """查询事件（支持虚拟展开重复事件）"""
     import pytz
-    
+    from app.services.virtual_expansion import virtual_expansion_service
+
     start_date = None
     end_date = None
-    
+
     # 如果指定了 event_date，转换为日期范围
     if event_date:
         try:
             user_tz = pytz.timezone("Asia/Shanghai")
-            
+
             dt = datetime.strptime(event_date, "%Y-%m-%d")
             dt = user_tz.localize(dt)
             start_date = dt.replace(hour=0, minute=0, second=0, microsecond=0)
             end_date = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
         except ValueError as e:
             print(f"Error parsing event_date in tool_query_events: {e}")
-    
+
     filters = {}
     if category:
         filters["category"] = category
     if status:
         filters["status"] = status
 
-    events = await db_service.get_events(
-        user_id, 
+    # 获取真实实例
+    real_events = await db_service.get_events(
+        user_id,
         start_date=start_date,
         end_date=end_date,
-        filters=filters, 
+        filters=filters,
         limit=limit
     )
 
+    # 过滤掉模板
+    real_instances = [e for e in real_events if not e.get("is_template")]
+
+    all_events = real_instances.copy()
+
+    # 虚拟展开重复事件
+    if expand_virtual and start_date and end_date:
+        templates = await db_service.get_recurring_templates(user_id)
+
+        virtual_instances = virtual_expansion_service.expand_templates(
+            templates=templates,
+            real_instances=real_instances,
+            start_date=start_date,
+            end_date=end_date
+        )
+
+        all_events.extend(virtual_instances)
+
     date_msg = f"（{event_date}）" if event_date else ""
+    virtual_count = len(all_events) - len(real_instances)
+    msg = f"找到 {len(all_events)} 个事件{date_msg}"
+    if virtual_count > 0:
+        msg += f"（含 {virtual_count} 个未创建的重复事件）"
+
     return {
         "success": True,
-        "events": events,
-        "count": len(events),
-        "message": f"找到 {len(events)} 个事件{date_msg}"
+        "events": all_events,
+        "count": len(all_events),
+        "message": msg
     }
 
 
