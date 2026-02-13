@@ -46,7 +46,20 @@ pytest test_scenarios_dual_time.py              # Scenario-based tests
 ### Interactive Client
 ```bash
 python client.py                                # Terminal client for testing chat
+python get_test_token.py [user_id]              # Generate test JWT token (30 days validity)
 ```
+
+### Serverless Deployment
+The backend includes serverless adapters for cloud functions:
+
+**Files:**
+- `serverless.py` - Mangum adapter for Tencent Cloud SCF / Alibaba Cloud FC / AWS Lambda
+- `serverless_cron.py` - Cron handler for scheduled habit replenishment
+
+**Configuration:**
+- Set `SERVERLESS=True` in `.env` to disable background scheduler
+- Mangum `lifespan="off"` to avoid conflicts with cloud function startup
+- API Gateway base path: `/api/v1`
 
 ## Architecture Overview
 

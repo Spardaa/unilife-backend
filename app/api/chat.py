@@ -5,6 +5,7 @@ Chat API - Conversational interface for UniLife (多智能体架构版)
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException
 import json
+from datetime import datetime
 
 from app.schemas.chat import (
     ChatRequest, ChatResponse, ActionResult,
@@ -322,3 +323,29 @@ async def update_conversation_title(
     if not success:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return {"status": "success", "message": "标题已更新"}
+
+@router.get("/messages/history", response_model=List[MessageResponse])
+async def get_message_history(
+    user_id: str,
+    limit: int = 50,
+    before: Optional[datetime] = None
+):
+    """
+    获取用户的完整消息历史（跨会话，按时间倒序）
+    用于实现类似微信/WhatsApp的连续聊天记录体验
+    """
+    messages = conversation_service.get_user_message_history(
+        user_id=user_id,
+        limit=limit,
+        before=before
+    )
+    return [
+        MessageResponse(
+            id=m.id,
+            conversation_id=m.conversation_id,
+            role=m.role,
+            content=m.content,
+            created_at=m.created_at.isoformat()
+        )
+        for m in messages
+    ]

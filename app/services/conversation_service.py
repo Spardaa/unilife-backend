@@ -457,5 +457,40 @@ class ConversationService:
             db.close()
 
 
+    def get_user_message_history(
+        self,
+        user_id: str,
+        limit: int = 50,
+        before: datetime = None
+    ) -> List[Message]:
+        """
+        获取用户的所有历史消息（跨会话），按时间倒序排列
+
+        Args:
+            user_id: 用户ID
+            limit: 返回数量限制
+            before: 获取该时间之前的消息（用于游标分页）
+
+        Returns:
+            消息列表
+        """
+        db = self.get_session()
+        try:
+            query = db.query(Message).join(
+                Conversation, Message.conversation_id == Conversation.id
+            ).filter(
+                Conversation.user_id == user_id
+            )
+
+            if before:
+                query = query.filter(Message.created_at < before)
+
+            return query.order_by(
+                desc(Message.created_at)
+            ).limit(limit).all()
+        finally:
+            db.close()
+
+
 # 全局对话服务实例
 conversation_service = ConversationService()

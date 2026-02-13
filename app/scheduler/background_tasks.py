@@ -14,7 +14,7 @@ from app.scheduler.daily_notifications import daily_notification_scheduler
 
 
 class BackgroundTaskScheduler:
-    """后台任务调度器（简化版）"""
+    """后台任务调度器(简化版)"""
 
     def __init__(self):
         self.scheduler: Optional[AsyncIOScheduler] = None
@@ -115,12 +115,12 @@ class BackgroundTaskScheduler:
         """
         每分钟检查所有用户的通知时间点
         
-        由于每个用户的作息时间不同，需要逐个检查
+        由于每个用户的作息时间不同,需要逐个检查
         """
         current_time = datetime.now()
         current_hm = current_time.strftime("%H:%M")
         
-        # 只在整分钟时记录日志，避免刷屏
+        # 只在整分钟时记录日志,避免刷屏
         if current_time.second < 5:
             print(f"[Scheduler] Checking notifications at {current_hm}")
         
@@ -146,17 +146,18 @@ class BackgroundTaskScheduler:
         """
         检查即将开始的事件并发送提醒通知
         
-        时区处理说明：
+        时区处理说明:
         - 数据库中 start_time 存储的是本地时间 (Asia/Shanghai) 的 naive datetime
         - datetime.now() 也是本地 naive datetime
-        - 因此可以直接比较，无需时区转换
+        - 因此可以直接比较,无需时区转换
         
-        逻辑：
-        1. 查询当天/明天有 start_time 的事件
-        2. 在 Python 中精确计算时间差
-        3. 检查用户是否开启了事件提醒
-        4. 避免重复发送
-        5. 发送 event_reminder 通知
+        逻辑:
+        1. 查询当天/明天有 start_time 的真实事件
+        2. 查询模板事件,虚拟展开为当天/明天的实例
+        3. 在 Python 中精确计算时间差
+        4. 检查用户是否开启了事件提醒
+        5. 避免重复发送
+        6. 发送 event_reminder 通知
         """
         current_time = datetime.now()
         today_str = current_time.strftime("%Y-%m-%d")
@@ -167,14 +168,14 @@ class BackgroundTaskScheduler:
             from app.config import settings
             from app.services.notification_service import notification_service
             from app.services.profile_service import profile_service
+            from app.services.virtual_expansion import virtual_expansion_service
             from app.models.notification import NotificationType, NotificationPriority, NotificationPayload
             
             db_path = settings.database_url.replace("sqlite:///", "")
             engine = create_engine(f"sqlite:///{db_path}")
             
             with engine.connect() as conn:
-                # 查询今天或明天有 start_time 的未完成事件
-                # 用 LIKE 匹配日期字符串前缀，避免 SQLite datetime() 的解析问题
+                # 1. 查询今天或明天有 start_time 的未完成真实事件
                 result = conn.execute(
                     text("""
                         SELECT e.id, e.user_id, e.title, e.start_time, e.event_date, u.user_id as profile_user_id
@@ -182,7 +183,6 @@ class BackgroundTaskScheduler:
                         LEFT JOIN users u ON e.user_id = u.id
                         WHERE (e.start_time LIKE :today_pattern OR e.start_time LIKE :tomorrow_pattern)
                         AND e.status IN ('pending', 'in_progress', 'PENDING', 'IN_PROGRESS')
-                        AND e.event_type != 'routine'
                         AND e.is_template = 0
                     """),
                     {
@@ -191,16 +191,129 @@ class BackgroundTaskScheduler:
                     }
                 ).fetchall()
                 
-                if not result:
+                # 2. 查询模板事件并虚拟展开,让重复事件也能收到提醒
+                template_rows = conn.execute(
+                    text("""
+                        SELECT e.id, e.user_id, e.title, e.start_time, e.event_date,
+                               e.repeat_pattern, e.duration, e.time_period, e.event_type,
+                               e.category, e.created_at, e.project_id,
+                               u.user_id as profile_user_id
+                        FROM events e
+                        LEFT JOIN users u ON e.user_id = u.id
+                        WHERE e.is_template = 1
+                        AND e.status NOT IN ('cancelled', 'CANCELLED')
+                    """)
+                ).fetchall()
+                
+                # 将模板虚拟展开为今天/明天的实例
+                virtual_rows = []
+                if template_rows:
+                    import json
+                    from pytz import timezone as pytz_timezone
+                    tz = pytz_timezone("Asia/Shanghai")
+                    
+                    templates_for_expansion = []
+                    for trow in template_rows:
+                        pattern_raw = trow[5]  # repeat_pattern
+                        if not pattern_raw:
+                            continue
+                        try:
+                            pattern = json.loads(pattern_raw) if isinstance(pattern_raw, str) else pattern_raw
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        
+                        templates_for_expansion.append({
+                            "id": trow[0],
+                            "user_id": trow[1],
+                            "title": trow[2],
+                            "start_time": trow[3],
+                            "event_date": trow[4],
+                            "repeat_pattern": pattern,
+                            "duration": trow[6],
+                            "time_period": trow[7],
+                            "event_type": trow[8],
+                            "category": trow[9],
+                            "created_at": trow[10],
+                            "project_id": trow[11],
+                            "profile_user_id": trow[12],
+                        })
+                    
+                    if templates_for_expansion:
+                        # 查询已存在的真实实例(避免虚拟展开已有实例的日期)
+                        real_instances_raw = conn.execute(
+                            text("""
+                                SELECT id, user_id, parent_routine_id as parent_event_id, event_date
+                                FROM events
+                                WHERE is_template = 0
+                                AND parent_routine_id IS NOT NULL
+                                AND (event_date LIKE :today_pattern OR event_date LIKE :tomorrow_pattern)
+                            """),
+                            {
+                                "today_pattern": f"{today_str}%",
+                                "tomorrow_pattern": f"{tomorrow_str}%"
+                            }
+                        ).fetchall()
+                        
+                        real_instances_for_lookup = [
+                            {"id": r[0], "user_id": r[1], "parent_event_id": r[2], "event_date": r[3]}
+                            for r in real_instances_raw
+                        ]
+                        
+                        today_dt = tz.localize(datetime.strptime(today_str, "%Y-%m-%d"))
+                        tomorrow_end = tz.localize(datetime.strptime(tomorrow_str, "%Y-%m-%d").replace(hour=23, minute=59, second=59))
+                        
+                        virtual_instances = virtual_expansion_service.expand_templates(
+                            templates=templates_for_expansion,
+                            real_instances=real_instances_for_lookup,
+                            start_date=today_dt,
+                            end_date=tomorrow_end
+                        )
+                        
+                        # 将有 start_time 的虚拟实例转换为与真实事件相同的格式
+                        for vi in virtual_instances:
+                            vi_start = vi.get("start_time")
+                            if not vi_start:
+                                continue  # 没有具体时间的虚拟实例跳过
+                            
+                            # 找到对应模板的 profile_user_id
+                            template_id = vi.get("template_id")
+                            p_user_id = None
+                            for t in templates_for_expansion:
+                                if t["id"] == template_id:
+                                    p_user_id = t.get("profile_user_id")
+                                    break
+                            
+                            # 转换 start_time 为 naive local datetime 字符串
+                            if isinstance(vi_start, datetime):
+                                st_str = vi_start.strftime("%Y-%m-%d %H:%M:%S") if vi_start.tzinfo is None else vi_start.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S")
+                            else:
+                                st_str = str(vi_start)
+                            
+                            virtual_rows.append((
+                                vi.get("id"),       # event_id (virtual_xxx)
+                                vi.get("user_id"),   # user_id
+                                vi.get("title"),     # title
+                                st_str,              # start_time string
+                                vi.get("event_date"),# event_date
+                                p_user_id            # profile_user_id
+                            ))
+                        
+                        if virtual_rows:
+                            print(f"[Scheduler] Found {len(virtual_rows)} virtual recurring instances for reminder check")
+                
+                # 合并真实事件和虚拟实例
+                all_rows = list(result) + virtual_rows
+                
+                if not all_rows:
                     return
                 
                 events_to_remind = []
                 
-                for row in result:
+                for row in all_rows:
                     event_id, user_uuid, title, start_time_raw, event_date, profile_user_id = row
                     
-                    # 使用 profile_user_id (例如 "001762...") 查找配置，因为这是前端更新配置时使用的 ID
-                    # 如果没有，则回退到 user_uuid
+                    # 使用 profile_user_id (例如 "001762...") 查找配置,因为这是前端更新配置时使用的 ID
+                    # 如果没有,则回退到 user_uuid
                     target_user_id = profile_user_id if profile_user_id else user_uuid
                     
                     try:
@@ -221,12 +334,12 @@ class BackgroundTaskScheduler:
                         if not prefs.get("event_reminders_enabled", True):
                             continue
                         
-                        # 检查是否应该发送提醒：
+                        # 检查是否应该发送提醒:
                         # - 只在 (reminder_minutes - 1, reminder_minutes] 范围内触发一次
-                        # - 例如：设置15分钟提醒，只在 14-15 分钟时触发（调度器每分钟检查一次）
+                        # - 例如:设置15分钟提醒,只在 14-15 分钟时触发(调度器每分钟检查一次)
                         # - 这确保每个事件只在一个时间窗口内触发一次
                         if time_diff > 0 and (reminder_minutes - 1) < time_diff <= reminder_minutes:
-                            # 先检查是否已发送过提醒（在构建列表前就去重）
+                            # 先检查是否已发送过提醒(在构建列表前就去重)
                             already_sent = conn.execute(
                                 text("""
                                     SELECT id FROM notifications 
@@ -291,9 +404,9 @@ class BackgroundTaskScheduler:
     
     def _parse_start_time(self, start_time_raw) -> datetime:
         """
-        解析 start_time，处理各种可能的格式
+        解析 start_time, 处理各种可能的格式
         
-        数据库中可能的格式：
+        数据库中可能的格式:
         - datetime 对象
         - "2026-02-08 15:30:00.000000" (SQLite 存储格式)
         - "2026-02-08T15:30:00" (ISO 格式)
@@ -304,7 +417,7 @@ class BackgroundTaskScheduler:
             return None
             
         if isinstance(start_time_raw, datetime):
-            # 如果已经是 datetime，去掉时区信息（确保是 naive）
+            # 如果已经是 datetime,去掉时区信息(确保是 naive)
             return start_time_raw.replace(tzinfo=None) if start_time_raw.tzinfo else start_time_raw
         
         if isinstance(start_time_raw, str):
@@ -316,11 +429,11 @@ class BackgroundTaskScheduler:
                 if time_str.endswith('Z'):
                     time_str = time_str[:-1] + '+00:00'
                 
-                # 尝试 fromisoformat（支持多种 ISO 格式）
+                # 尝试 fromisoformat(支持多种 ISO 格式)
                 try:
                     parsed = datetime.fromisoformat(time_str)
                     if parsed.tzinfo:
-                        # 有时区信息，转换为本地时间
+                        # 有时区信息,转换为本地时间
                         import pytz
                         local_tz = pytz.timezone("Asia/Shanghai")
                         parsed = parsed.astimezone(local_tz).replace(tzinfo=None)
@@ -390,7 +503,7 @@ class BackgroundTaskScheduler:
             return time_str
     
     def _get_all_active_users(self) -> List[str]:
-        """获取所有活跃用户（7天内有活动）"""
+        """获取所有活跃用户(7天内有活动)"""
         from sqlalchemy import create_engine, text
         from app.config import settings
         
