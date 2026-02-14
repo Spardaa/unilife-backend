@@ -620,9 +620,13 @@ class DatabaseService:
                         query = query.filter(getattr(EventModel, key) == value)
 
             # Order by event_date first (NULLS LAST), then start_time
+            # Compatible with older SQLite (pre-3.30.0) where NULLS LAST is not supported
+            from sqlalchemy import case
             results = query.order_by(
-                nullslast(EventModel.event_date),
-                nullslast(EventModel.start_time)
+                case((EventModel.event_date.is_(None), 1), else_=0),
+                EventModel.event_date,
+                case((EventModel.start_time.is_(None), 1), else_=0),
+                EventModel.start_time
             ).limit(limit).all()
             tz = self._get_user_tz(session, user_id)
             return [event.to_dict(tz=tz) for event in results]
