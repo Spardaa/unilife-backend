@@ -25,7 +25,7 @@ from app.services.conversation_service import conversation_service
 
 # 环境变量控制是否使用 Unified 模式
 # 设置 UNIFIED_AGENT_MODE=true 启用 1+1 架构
-UNIFIED_MODE = os.environ.get("UNIFIED_AGENT_MODE", "false").lower() == "true"
+UNIFIED_MODE = os.environ.get("UNIFIED_AGENT_MODE", "true").lower() == "true"
 
 
 class AgentOrchestrator:
