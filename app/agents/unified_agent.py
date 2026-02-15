@@ -118,8 +118,12 @@ class UnifiedAgent(BaseAgent):
                     function_args = json.loads(tool_call["function"]["arguments"])
                     
                     # 自动添加 user_id（如果工具需要但用户没提供）
-                    if "user_id" in str(tool_call["function"]) and "user_id" not in function_args:
-                        function_args["user_id"] = context.user_id
+                    # 修复：通过 ToolRegistry 检查工具定义，而不是检查 tool_call 字符串
+                    tool_def = self.tools.get_tool(function_name)
+                    if tool_def:
+                        tool_params = tool_def.get("parameters", {}).get("properties", {})
+                        if "user_id" in tool_params and "user_id" not in function_args:
+                            function_args["user_id"] = context.user_id
                     
                     # 执行工具
                     try:
