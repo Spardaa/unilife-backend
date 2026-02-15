@@ -29,6 +29,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"{LogColors.bold('🚀 UniLife Backend starting...')}")
     logger.info(f"🔧 Debug mode: {settings.debug}")
 
+    # Initialize database
+    from app.services.db import db_service
+    try:
+        db_service.initialize()
+        logger.info("✅ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed: {e}")
+
     # 检测运行环境
     is_serverless = os.getenv("SERVERLESS")
     if is_serverless:
