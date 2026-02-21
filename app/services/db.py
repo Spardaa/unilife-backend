@@ -742,10 +742,19 @@ class DatabaseService:
             if "event_date" in update_data:
                 update_data["event_date"] = self._convert_to_local_naive(update_data["event_date"])
 
+            # Fields that can be explicitly set to None (cleared by user)
+            nullable_fields = {
+                "notes", "description", "location", "start_time", "end_time",
+                "event_date", "time_period", "energy_required", "energy_consumption",
+                "repeat_pattern", "project_id", "parent_event_id", "routine_batch_id",
+                "completed_at", "started_at"
+            }
+
             # Update fields
             for key, value in update_data.items():
-                if hasattr(event, key) and value is not None:
-                    setattr(event, key, value)
+                if hasattr(event, key):
+                    if value is not None or key in nullable_fields:
+                        setattr(event, key, value)
             
             # Habit Tracking Trigger: If status changed to COMPLETED
             if update_data.get("status") == "COMPLETED":
