@@ -13,6 +13,7 @@ import logging
 
 from app.services.llm import llm_service
 from app.services.prompt import prompt_service
+from app.services.memory_service import memory_service
 from app.agents.base import (
     BaseAgent, ConversationContext, AgentResponse, build_messages_from_context
 )
@@ -63,13 +64,32 @@ class ContextFilterAgent(BaseAgent):
         
         # 尝试使用 LLM 智能筛选
         try:
-            filtered_context = await self._llm_filter(context)
+            filtered_context, should_inject_memory, memory_query = await self._llm_filter(context)
+            
+            # 如果需要注入记忆，选择性获取相关记忆片段
+            memory_content = ""
+            if should_inject_memory:
+                try:
+                    if memory_query:
+                        memory_content = memory_service.get_relevant_memory(
+                            context.user_id, 
+                            query=memory_query, 
+                            days=14
+                        )
+                    else:
+                        memory_content = memory_service.get_recent_diary(context.user_id, days=3)
+                except Exception as me:
+                    logger.warning(f"Failed to load memory: {me}")
+            
             return AgentResponse(
                 content=f"[Filter] LLM筛选，保留 {len(filtered_context)} 条",
                 metadata={
                     "original_count": len(context.conversation_history),
                     "filtered_count": len(filtered_context),
-                    "filter_method": "llm"
+                    "filter_method": "llm",
+                    "inject_memory": should_inject_memory,
+                    "memory_query": memory_query,
+                    "memory_content": memory_content
                 },
                 filtered_context=filtered_context
             )
@@ -82,14 +102,19 @@ class ContextFilterAgent(BaseAgent):
                 metadata={
                     "original_count": len(context.conversation_history),
                     "filtered_count": len(filtered_context),
-                    "filter_method": "fallback"
+                    "filter_method": "fallback",
+                    "inject_memory": False,
+                    "memory_content": ""
                 },
                 filtered_context=filtered_context
             )
     
-    async def _llm_filter(self, context: ConversationContext) -> List[Dict[str, Any]]:
+    async def _llm_filter(self, context: ConversationContext) -> tuple:
         """
-        使用 LLM 智能判断需要保留多少上下文
+        使用 LLM 智能判断需要保留多少上下文，以及是否需要注入记忆
+        
+        Returns:
+            (filtered_context, should_inject_memory)
         """
         # 构建简化的消息列表（只需要最近几条历史用于判断）
         system_prompt = self._get_system_prompt()
@@ -121,20 +146,28 @@ class ContextFilterAgent(BaseAgent):
                 "type": "function",
                 "function": {
                     "name": "filter_context",
-                    "description": "决定需要保留多少条历史上下文",
+                    "description": "决定保留多少条历史消息，以及是否需要记忆",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "related_context_count": {
                                 "type": "integer",
-                                "description": "需要保留的历史消息条数 (0-10)"
+                                "description": "需要保留的历史消息条数 (0-15)"
+                            },
+                            "inject_memory": {
+                                "type": "boolean",
+                                "description": "是否需要注入记忆。用户提到回忆、深度对话、持续话题时为 true"
+                            },
+                            "memory_query": {
+                                "type": "string",
+                                "description": "如果 inject_memory 为 true，用一句话描述需要什么类型的记忆（用于检索），例如：‘用户对学习计划的情处和态度’"
                             },
                             "reason": {
                                 "type": "string",
                                 "description": "简短理由"
                             }
                         },
-                        "required": ["related_context_count"]
+                        "required": ["related_context_count", "inject_memory"]
                     }
                 }
             }
@@ -153,15 +186,17 @@ class ContextFilterAgent(BaseAgent):
         if tool_calls and len(tool_calls) > 0:
             function_args = json.loads(tool_calls[0]["function"]["arguments"])
             count = function_args.get("related_context_count", 3)
-            count = max(0, min(count, 10))  # 限制范围
+            count = max(0, min(count, 15))  # 限制范围
+            should_inject_memory = function_args.get("inject_memory", False)
+            memory_query = function_args.get("memory_query", "")
             
             reason = function_args.get("reason", "")
-            logger.debug(f"LLM filter: keep {count} messages, reason: {reason}")
+            logger.debug(f"LLM filter: keep {count} msgs, inject_memory={should_inject_memory}, query='{memory_query}', reason: {reason}")
             
-            return self._slice_context(context.conversation_history, count)
+            return self._slice_context(context.conversation_history, count), should_inject_memory, memory_query
         
         # 如果没有工具调用，使用默认值
-        return self._slice_context(context.conversation_history, 3)
+        return self._slice_context(context.conversation_history, 3), False, ""
     
     def _summarize_history(self, history: List[Dict[str, Any]]) -> str:
         """

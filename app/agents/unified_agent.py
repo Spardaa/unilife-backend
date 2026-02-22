@@ -20,6 +20,7 @@ from app.agents.base import (
 )
 from app.agents.tools import tool_registry
 from app.services.db import db_service
+from app.services.soul_service import soul_service
 
 
 logger = logging.getLogger("unified_agent")
@@ -72,6 +73,11 @@ class UnifiedAgent(BaseAgent):
         
         # 在系统提示中明确告知 user_id
         system_prompt += f"\n\n## 当前用户\n\n用户ID: {context.user_id}\n在调用需要 user_id 的工具时，请直接使用此 ID，不需要询问用户。"
+        
+        # 如果有记忆内容（由 ContextFilter 选择性注入），替换占位符
+        memory_content = context.request_metadata.get("memory_content", "")
+        if not memory_content:
+            memory_content = "（暂无相关记忆）"
         
         # 2. 构建消息列表
         messages = build_messages_from_context(
@@ -197,38 +203,37 @@ class UnifiedAgent(BaseAgent):
         current_time = context.current_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         prompt = base_prompt.replace("{current_time}", current_time)
         
-        # 注入用户画像
-        user_profile_str = self._format_user_profile(context.user_profile)
-        prompt = prompt.replace("{user_profile}", user_profile_str)
-        
-        # 注入决策偏好
-        decision_profile_str = self._format_decision_profile(context.user_decision_profile)
-        prompt = prompt.replace("{user_decision_profile}", decision_profile_str)
-        
         return prompt
     
     async def _build_system_prompt_async(self, context: ConversationContext) -> str:
         """
-        异步构建系统提示词，注入用户画像、决策偏好和项目列表
-        
-        Args:
-            context: 对话上下文
-        
-        Returns:
-            系统提示词
+        异步构建系统提示词，注入项目列表、灵魂和记忆
         """
-        # 获取基础提示
+        # 获取基础提示（含时间替换）
         prompt = self._build_system_prompt(context)
         
-        # 异步获取用户项目并注入
+        # 注入用户项目
         try:
             projects = await db_service.get_projects(context.user_id, active_only=True)
             projects_str = self._format_user_projects(projects)
         except Exception as e:
             logger.warning(f"Failed to load user projects: {e}")
             projects_str = "暂无人生项目"
-        
         prompt = prompt.replace("{user_projects}", projects_str)
+        
+        # 注入灵魂文件 (soul.md)
+        try:
+            soul_content = soul_service.get_soul(context.user_id)
+        except Exception as e:
+            logger.warning(f"Failed to load soul: {e}")
+            soul_content = ""
+        prompt = prompt.replace("{soul_content}", soul_content)
+        
+        # 注入记忆内容（由 ContextFilter 选择性决定）
+        memory_content = context.request_metadata.get("memory_content", "")
+        if not memory_content:
+            memory_content = "（暂无相关记忆）"
+        prompt = prompt.replace("{memory_content}", memory_content)
         
         return prompt
     

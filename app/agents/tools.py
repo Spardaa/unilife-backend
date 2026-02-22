@@ -1053,6 +1053,33 @@ def register_all_tools():
         func=tool_get_quest_overview
     )
 
+    # ============ Soul / Memory Tools ============
+
+    # 33. 更新灵魂文件
+    tool_registry.register(
+        name="update_soul",
+        description="更新你的灵魂文件 (soul.md)。这是你的个性、价值观和对用户的自我认知。当你经历了某些深刻的事情、与用户达成了新的共识、或觉得需要演化自我认知时，可以调用此工具。注意：谨慎使用，不要频繁更新，只在真正有意义的时刻调用。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "new_content": {
+                    "type": "string",
+                    "description": "新的 soul.md 完整内容（Markdown格式）。应该保留核心精神，同时融入新的自我认知。"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "更新原因（内部记录，不展示给用户）"
+                }
+            },
+            "required": ["user_id", "new_content"]
+        },
+        func=tool_update_soul
+    )
+
 
 # ============ Tool 实现函数 ============
 
@@ -2645,6 +2672,31 @@ async def tool_get_quest_overview(
             "success": False,
             "error": str(e),
             "message": f"[QUEST] 获取失败：{str(e)}"
+        }
+
+
+# ============ Soul / Memory Tool 实现 ============
+
+async def tool_update_soul(user_id: str, new_content: str, reason: str = "") -> Dict[str, Any]:
+    """更新用户的灵魂文件 (soul.md)"""
+    try:
+        from app.services.soul_service import soul_service
+        
+        old_content = soul_service.get_soul(user_id)
+        soul_service.update_soul(user_id, new_content)
+        
+        return {
+            "success": True,
+            "message": "灵魂文件已更新",
+            "reason": reason,
+            "old_length": len(old_content),
+            "new_length": len(new_content)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"灵魂文件更新失败：{str(e)}"
         }
 
 

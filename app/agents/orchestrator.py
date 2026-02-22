@@ -164,6 +164,11 @@ class AgentOrchestrator:
             if filter_response.filtered_context is not None:
                 context.conversation_history = filter_response.filtered_context
                 logger.debug(f"Context filtered: {original_history_count} → {len(context.conversation_history)} messages in {filter_duration:.2f}s")
+            
+            # 如果需要注入记忆，将记忆内容放入 request_metadata
+            if filter_response.metadata.get("inject_memory") and filter_response.metadata.get("memory_content"):
+                context.request_metadata["memory_content"] = filter_response.metadata["memory_content"]
+                logger.debug("Memory content injected into context")
         
         # 2. 调用 UnifiedAgent 处理
         unified_start = time.time()

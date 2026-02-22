@@ -226,12 +226,8 @@ def build_messages_from_context(
             assistant_msg = {}
             if msg.get("content"):
                 content = msg["content"]
-                timestamp = msg.get("timestamp", "")
-
-                # 如果有时间戳，添加到内容前
-                if timestamp:
-                    content = f"{timestamp} {content}"
-
+                # 注意：不要给 assistant 消息添加时间戳
+                # 否则 AI 会模仿 [HH:MM] 格式，导致回复中重复出现时间戳
                 assistant_msg["content"] = content
 
             if msg.get("tool_calls"):

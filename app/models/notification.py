@@ -27,6 +27,7 @@ class NotificationType(str, Enum):
     ENERGY_ALERT = "energy_alert"             # Low energy warning
     DAILY_SUMMARY = "daily_summary"           # Daily schedule summary
     GREETING = "greeting"                     # Morning/evening greeting
+    PROACTIVE_CHECK = "proactive_check"       # AI autonomous proactive message
     CUSTOM = "custom"                         # Custom notification
 
 
@@ -42,6 +43,7 @@ class NotificationPriority(str, Enum):
     """Notification priority levels"""
     LOW = "low"
     NORMAL = "normal"
+    MEDIUM = "medium"
     HIGH = "high"
 
 

@@ -10,6 +10,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.agents.observer import observer_agent
+from app.agents.proactive_check import proactive_check_agent
 from app.scheduler.daily_notifications import daily_notification_scheduler
 
 
@@ -65,6 +66,24 @@ class BackgroundTaskScheduler:
             name="Check Event Reminders",
             replace_existing=True
         )
+        
+        # 每日凌晨 2:30 写日记 + 分析
+        self.scheduler.add_job(
+            self._write_daily_diaries,
+            trigger=CronTrigger(hour=2, minute=30),
+            id="write_daily_diaries",
+            name="Write Daily Diaries",
+            replace_existing=True
+        )
+        
+        # 每周日凌晨 4:00 精炼旧记忆
+        self.scheduler.add_job(
+            self._consolidate_memories,
+            trigger=CronTrigger(day_of_week="sun", hour=4, minute=0),
+            id="consolidate_memories",
+            name="Weekly Memory Consolidation",
+            replace_existing=True
+        )
 
         self.scheduler.start()
         print("[Scheduler] Background tasks scheduler started successfully")
@@ -110,6 +129,44 @@ class BackgroundTaskScheduler:
 
         except Exception as e:
             print(f"[Scheduler] Error in daily preference analysis task: {e}")
+
+    async def _write_daily_diaries(self):
+        """每日日记撰写任务"""
+        print(f"[Scheduler] Running daily diary writing at {datetime.now()}")
+        try:
+            yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+            user_ids = self._get_active_users_for_date(date.today() - timedelta(days=1))
+
+            written = 0
+            for user_id in user_ids:
+                try:
+                    result = await observer_agent.write_daily_diary(user_id, yesterday)
+                    if result:
+                        written += 1
+                except Exception as e:
+                    print(f"[Scheduler] Error writing diary for {user_id}: {e}")
+
+            print(f"[Scheduler] Daily diaries written: {written}/{len(user_ids)}")
+        except Exception as e:
+            print(f"[Scheduler] Error in diary writing task: {e}")
+
+    async def _consolidate_memories(self):
+        """每周记忆精炼任务"""
+        print(f"[Scheduler] Running weekly memory consolidation at {datetime.now()}")
+        try:
+            user_ids = self._get_all_active_users()
+            consolidated = 0
+            for user_id in user_ids:
+                try:
+                    result = await observer_agent.consolidate_memory(user_id)
+                    if result:
+                        consolidated += 1
+                except Exception as e:
+                    print(f"[Scheduler] Error consolidating memory for {user_id}: {e}")
+
+            print(f"[Scheduler] Memory consolidated for {consolidated} users")
+        except Exception as e:
+            print(f"[Scheduler] Error in memory consolidation task: {e}")
 
     async def _check_and_send_notifications(self):
         """
@@ -480,6 +537,24 @@ class BackgroundTaskScheduler:
             ritual_time = self._subtract_minutes(sleep_time, 15)
             if current_hm == ritual_time:
                 await self.notification_scheduler.send_closing_ritual(user_id)
+            
+            # === 自主检查 (Proactive Check) ===
+            # 在四个时间点触发 AI 自主思考
+            check_mapping = {
+                wake_time: "morning",
+                "12:00": "noon",
+                "18:00": "evening",
+                ritual_time: "night"
+            }
+            check_type = check_mapping.get(current_hm)
+            if check_type:
+                try:
+                    await proactive_check_agent.run_check(
+                        user_id=user_id,
+                        check_type=check_type
+                    )
+                except Exception as pe:
+                    print(f"[Scheduler] Proactive check error for {user_id}: {pe}")
                 
         except Exception as e:
             print(f"[Scheduler] Error checking notifications for {user_id}: {e}")

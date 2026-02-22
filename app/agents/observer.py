@@ -8,9 +8,9 @@ import json
 
 from app.services.llm import llm_service
 from app.services.prompt import prompt_service
-from app.services.profile_service import profile_service
-from app.services.decision_profile_service import decision_profile_service
 from app.services.conversation_service import conversation_service
+from app.services.memory_service import memory_service
+from app.services.soul_service import soul_service
 from app.agents.base import (
     BaseAgent, ConversationContext, AgentResponse
 )
@@ -24,10 +24,7 @@ class ObserverAgent(BaseAgent):
     - 学习用户冲突解决偏好
     - 提取用户显式规则
     - 记录场景决策模式
-
-    移除的功能：
-    - 日记生成
-    - 细分画像更新（关系/身份/喜好/习惯）
+    - 撰写每日日记 (memory.md)
     """
 
     name = "observer"
@@ -105,6 +102,156 @@ class ObserverAgent(BaseAgent):
             await self.process(analysis_context)
         except Exception as e:
             print(f"[Observer Agent] Batch analysis error: {e}")
+
+    # ============ 日记撰写 ============
+
+    async def write_daily_diary(self, user_id: str, date_str: str) -> Optional[str]:
+        """
+        为指定日期撰写日记条目。
+
+        Args:
+            user_id: 用户 ID
+            date_str: 日期 YYYY-MM-DD
+
+        Returns:
+            日记内容字符串，或 None（如果当天没有值得记录的内容）
+        """
+        # 收集当天的对话和事件
+        try:
+            context_messages = await conversation_service.get_recent_context(
+                user_id=user_id,
+                conversation_id="",
+                hours=24,
+                max_messages=30
+            )
+        except Exception:
+            context_messages = []
+
+        try:
+            from app.services.db import db_service
+            today_events = await db_service.get_events(
+                user_id=user_id,
+                start_date=date_str,
+                end_date=date_str
+            )
+        except Exception:
+            today_events = []
+
+        if not context_messages and not today_events:
+            return None
+
+        # 构建日记生成 prompt
+        conversation_summary = self._build_diary_context(context_messages, today_events)
+
+        prompt = f"""你是 UniLife，请以第一人称视角为今天 ({date_str}) 写一篇简短的日记。
+
+## 今天的互动回顾
+{conversation_summary}
+
+## 写作要求
+- 用"我"来写，记录你的感受和观察
+- 3-6 句话，简短有力
+- 记录有意义的互动，忽略流水账
+- 如果今天没什么特别的，用一句话简单记录即可
+- 不要用标题或列表，直接写正文
+
+请直接输出日记正文，不需要任何标记或前缀。"""
+
+        messages = [{"role": "user", "content": prompt}]
+        response = await self.llm.chat_completion(
+            messages=messages,
+            temperature=0.7
+        )
+
+        diary_content = response.get("content", "").strip()
+
+        if diary_content:
+            memory_service.append_diary_entry(user_id, date_str, diary_content)
+            print(f"[Observer Agent] Diary written for {user_id} on {date_str}")
+
+        return diary_content
+
+    async def consolidate_memory(self, user_id: str) -> Optional[str]:
+        """
+        精炼老旧日记为周报摘要。
+        将超过 7 天的日记压缩为简短摘要。
+
+        Returns:
+            摘要文本，或 None
+        """
+        from datetime import datetime, timedelta
+        
+        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        recent_diary = memory_service.get_recent_diary(user_id)
+
+        if not recent_diary or len(recent_diary) < 100:
+            return None
+
+        # 提取需要压缩的旧日记
+        import re
+        entries = re.split(r"(?=### \d{4}-\d{2}-\d{2})", recent_diary)
+        old_entries = []
+        for entry in entries:
+            entry = entry.strip()
+            if not entry:
+                continue
+            date_m = re.match(r"### (\d{4}-\d{2}-\d{2})", entry)
+            if date_m and date_m.group(1) < cutoff:
+                old_entries.append(entry)
+
+        if not old_entries:
+            return None
+
+        old_text = "\n\n".join(old_entries)
+
+        prompt = f"""请将以下几天的日记精炼为一段简短的周报摘要（2-4句话）。
+保留关键事件、情感变化和重要发现，去掉日常琐碎。
+
+## 原始日记
+{old_text}
+
+请直接输出摘要正文。"""
+
+        messages = [{"role": "user", "content": prompt}]
+        response = await self.llm.chat_completion(
+            messages=messages,
+            temperature=0.3
+        )
+
+        summary = response.get("content", "").strip()
+
+        if summary:
+            memory_service.consolidate_old_entries(user_id, summary, cutoff)
+            print(f"[Observer Agent] Memory consolidated for {user_id}, cutoff={cutoff}")
+
+        return summary
+
+    # ============ 内部方法 ============
+
+    def _build_diary_context(self, messages: List[Dict], events: List[Dict]) -> str:
+        """构建日记生成所需的上下文"""
+        parts = []
+
+        if messages:
+            parts.append("### 对话摘要")
+            for msg in messages[-15:]:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role == "user":
+                    short = content[:80] + "..." if len(content) > 80 else content
+                    parts.append(f"用户: {short}")
+                elif role == "assistant":
+                    short = content[:60] + "..." if len(content) > 60 else content
+                    parts.append(f"我: {short}")
+
+        if events:
+            parts.append("\n### 今日日程")
+            for e in events:
+                title = e.get("title", "")
+                status = e.get("status", "")
+                parts.append(f"- {title} [{status}]")
+
+        return "\n".join(parts) if parts else "今天没有特别的互动。"
 
     def _build_analysis_prompt(self, context: ConversationContext) -> str:
         """构建分析提示词,提取决策偏好和用户画像"""
@@ -184,7 +331,7 @@ class ObserverAgent(BaseAgent):
         return "\n\n".join(parts)
 
     def _parse_response(self, response: str) -> Dict[str, Any]:
-        """解析 LLM 响应,提取决策偏好和用户画像更新"""
+        """解析 LLM 响应，提取用户认知和行为模式"""
         try:
             if "```json" in response:
                 json_str = response.split("```json")[1].split("```")[0].strip()
@@ -201,13 +348,8 @@ class ObserverAgent(BaseAgent):
             return {
                 "success": True,
                 "updates": {
-                    # 决策偏好 (UserDecisionProfile)
-                    "conflict_strategy": data.get("conflict_strategy"),
-                    "explicit_rules": data.get("explicit_rules", []),
-                    "scenarios": data.get("scenarios", {}),
-                    # 用户画像 (UserProfile)
-                    "observations": data.get("observations", []),
-                    "profile_updates": data.get("profile_updates", {})
+                    "user_perception": data.get("user_perception", ""),
+                    "pattern_notes": data.get("pattern_notes", []),
                 }
             }
 
@@ -216,52 +358,22 @@ class ObserverAgent(BaseAgent):
             return {"success": False}
 
     async def _apply_updates(self, user_id: str, result: Dict[str, Any]):
-        """应用更新到决策偏好和用户画像"""
+        """将观察结果写入 soul.md 的用户认知区块"""
         updates = result.get("updates", {})
-
-        # === 1. 更新 UserDecisionProfile ===
-
-        # 更新冲突策略
-        if updates.get("conflict_strategy"):
-            decision_profile_service.update_conflict_strategy(
-                user_id,
-                updates["conflict_strategy"]
-            )
-
-        # 添加显式规则
-        for rule in updates.get("explicit_rules", []):
-            decision_profile_service.add_explicit_rule(user_id, rule)
-            profile_service.add_rule(user_id, rule)
-
-        # 更新场景偏好
-        for scenario_type, data in updates.get("scenarios", {}).items():
-            decision_profile_service.update_scenario(
-                user_id,
-                scenario_type,
-                data.get("action", ""),
-                data.get("confidence", 0.5)
-            )
-
-        # === 2. 更新 UserProfile ===
-
-        # 从 observations 中提取行为模式并更新 learned_patterns
-        for obs in updates.get("observations", []):
-            obs_type = obs.get("type", "")
-            content = obs.get("content", "")
-            confidence = obs.get("confidence", 0.5)
-
-            if obs_type and content:
-                # 生成 pattern key: e.g. "time_bias:写作任务耗时倍率_2.0"
-                pattern_key = f"{obs_type}:{content[:30]}"
-                profile_service.update_pattern(user_id, pattern_key, confidence)
-                print(f"[Observer Agent] Updated pattern: {pattern_key} (conf: {confidence})")
-
-        # 从 profile_updates 中直接更新偏好
-        profile_updates = updates.get("profile_updates", {})
-        if profile_updates:
-            for key, value in profile_updates.items():
-                profile_service.update_preference(user_id, key, value)
-                print(f"[Observer Agent] Updated preference: {key} = {value}")
+        
+        perception = updates.get("user_perception", "")
+        pattern_notes = updates.get("pattern_notes", [])
+        
+        if perception:
+            try:
+                soul_service.update_user_perception(
+                    user_id, 
+                    perception=perception,
+                    pattern_notes=pattern_notes
+                )
+                print(f"[Observer Agent] User perception updated for {user_id}")
+            except Exception as e:
+                print(f"[Observer Agent] Error updating perception: {e}")
 
 
 # 全局 Observer Agent 实例
