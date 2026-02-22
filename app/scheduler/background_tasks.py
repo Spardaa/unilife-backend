@@ -431,26 +431,19 @@ class BackgroundTaskScheduler:
                     
                 print(f"[Scheduler] Found {len(events_to_remind)} events needing reminders")
                 
+                from app.agents.notification_agent import notification_agent
+                
                 for event in events_to_remind:
                     try:
-                        # 发送提醒通知
-                        print(f"[Scheduler] Sending event reminder: '{event['title']}' in {event['minutes_until']} min (user: {event['user_id'][:8]}...)")
+                        print(f"[Scheduler] Generating event reminder: '{event['title']}' in {event['minutes_until']} min (user: {event['user_id'][:8]}...)")
                         
-                        await notification_service.send_notification(
+                        # 使用 NotificationAgent 生成个性化提醒（+ 注入对话）
+                        await notification_agent.generate_event_reminder(
                             user_id=event["user_id"],
-                            payload=NotificationPayload(
-                                title="⏰ 日程提醒",
-                                body=f"「{event['title']}」将在 {event['minutes_until']} 分钟后开始",
-                                category="EVENT_REMINDER",
-                                data={
-                                    "type": "event_reminder",
-                                    "event_id": event["event_id"],
-                                    "action": "open_event",
-                                    "minutes_before": event["reminder_minutes"]
-                                }
-                            ),
-                            notification_type=NotificationType.EVENT_REMINDER,
-                            priority=NotificationPriority.HIGH
+                            event_title=event["title"],
+                            event_start_time="",  # 由 minutes_until 推导
+                            minutes_until=event["minutes_until"],
+                            event_id=event["event_id"]
                         )
                         
                     except Exception as e:
