@@ -5,6 +5,7 @@ Background Tasks - 定时任务调度器 (简化版)
 from typing import Optional, List
 from datetime import datetime, date, timedelta
 import asyncio
+import pytz
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -173,8 +174,10 @@ class BackgroundTaskScheduler:
         每分钟检查所有用户的通知时间点
         
         由于每个用户的作息时间不同,需要逐个检查
+        注意: 使用 Asia/Shanghai 时区，确保在 UTC 服务器上也能按北京时间触发
         """
-        current_time = datetime.now()
+        user_tz = pytz.timezone("Asia/Shanghai")
+        current_time = datetime.now(user_tz)
         current_hm = current_time.strftime("%H:%M")
         
         # 只在整分钟时记录日志,避免刷屏
@@ -216,7 +219,8 @@ class BackgroundTaskScheduler:
         5. 避免重复发送
         6. 发送 event_reminder 通知
         """
-        current_time = datetime.now()
+        user_tz = pytz.timezone("Asia/Shanghai")
+        current_time = datetime.now(user_tz).replace(tzinfo=None)  # naive 北京时间，与数据库格式一致
         today_str = current_time.strftime("%Y-%m-%d")
         tomorrow_str = (current_time + timedelta(days=1)).strftime("%Y-%m-%d")
         

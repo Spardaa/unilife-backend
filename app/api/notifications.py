@@ -259,23 +259,38 @@ async def test_notification(
     user_id: str = Depends(get_current_user)
 ):
     """
-    Send a test notification
-
-    Sends a simple test notification to verify push notification setup.
-    Useful for testing device registration and notification delivery.
+    Send a test push notification AND inject into chat.
+    
+    Bypasses all LLM generation and notification type logic.
+    Directly tests the push + chat injection pipeline.
     """
-    payload = NotificationPayload(
-        title="测试通知",
-        body="如果你看到这条消息，说明推送通知功能正常！",
-        sound="default",
-        data={"test": True}
-    )
-
-    return await notification_service.send_notification(
+    from app.agents.notification_agent import notification_agent
+    from app.models.notification import NotificationType, NotificationPriority
+    
+    import pytz
+    from datetime import datetime
+    user_tz = pytz.timezone("Asia/Shanghai")
+    now_str = datetime.now(user_tz).strftime("%H:%M")
+    
+    body = f"🔔 这是一条测试推送（{now_str}）。如果你在聊天中也看到了这条消息，说明推送和聊天注入都正常工作！"
+    
+    await notification_agent._send_and_inject(
         user_id=user_id,
-        payload=payload,
-        notification_type=NotificationType.CUSTOM
+        title="UniLife 测试",
+        body=body,
+        notification_type=NotificationType.CUSTOM,
+        category="TEST_NOTIFICATION",
+        data={
+            "type": "test",
+            "source": "debug",
+            "action": "open_chat"
+        }
     )
+    
+    return {
+        "triggered": True,
+        "message": "推送已发送，请检查通知和聊天记录"
+    }
 
 
 # ==================== Debug Endpoints ====================
@@ -283,7 +298,8 @@ async def test_notification(
 @router.post("/notifications/debug/trigger/{type}")
 async def trigger_daily_notification(
     type: str,
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
+    force: bool = Query(True, description="Force send, bypass time/condition checks")
 ):
     """
     Trigger a specific daily notification for debugging (Morning, Afternoon, Evening, Closing)
@@ -293,19 +309,21 @@ async def trigger_daily_notification(
     - afternoon_checkin
     - evening_switch
     - closing_ritual
+    
+    Set force=true to bypass awake-window and event-empty checks.
     """
     from app.scheduler.daily_notifications import daily_notification_scheduler
     
     result = False
     
     if type == "morning_briefing":
-        result = await daily_notification_scheduler.send_morning_briefing(user_id)
+        result = await daily_notification_scheduler.send_morning_briefing(user_id, force=force)
     elif type == "afternoon_checkin":
-        result = await daily_notification_scheduler.send_afternoon_checkin(user_id)
+        result = await daily_notification_scheduler.send_afternoon_checkin(user_id, force=force)
     elif type == "evening_switch":
-        result = await daily_notification_scheduler.send_evening_switch(user_id)
+        result = await daily_notification_scheduler.send_evening_switch(user_id, force=force)
     elif type == "closing_ritual":
-        result = await daily_notification_scheduler.send_closing_ritual(user_id)
+        result = await daily_notification_scheduler.send_closing_ritual(user_id, force=force)
     else:
         raise HTTPException(status_code=400, detail="Invalid notification type")
         
