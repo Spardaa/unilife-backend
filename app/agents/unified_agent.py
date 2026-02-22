@@ -90,6 +90,8 @@ class UnifiedAgent(BaseAgent):
         iterations = 0
         tool_results = []
         all_tool_calls = []
+        # 保存 (tool_call, tool_result_json) 配对，用于持久化到数据库
+        tool_call_result_pairs = []
         final_content = ""
         
         while iterations < self.max_iterations:
@@ -142,10 +144,18 @@ class UnifiedAgent(BaseAgent):
                         tool_results.append(result)
                     
                     # 将工具结果添加到消息中
+                    result_json = json.dumps(result, ensure_ascii=False, cls=DateTimeEncoder)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call["id"],
-                        "content": json.dumps(result, ensure_ascii=False, cls=DateTimeEncoder)
+                        "content": result_json
+                    })
+                    
+                    # 记录配对（用于持久化）
+                    tool_call_result_pairs.append({
+                        "tool_call_id": tool_call["id"],
+                        "function_name": function_name,
+                        "result": result_json
                     })
                 
                 # 继续循环，让 LLM 看到工具结果后决定下一步
@@ -162,6 +172,7 @@ class UnifiedAgent(BaseAgent):
         # 4. 提取结构化数据
         actions = self._extract_actions(tool_results)
         suggestions = self._extract_suggestions(tool_results)
+        questions = self._extract_questions(tool_results)
         query_results = self._extract_query_results(tool_results)
         
         # 5. 构建元数据
@@ -178,7 +189,9 @@ class UnifiedAgent(BaseAgent):
             content=final_content or "抱歉，我没有理解您的需求。",
             actions=actions,
             tool_calls=all_tool_calls,
+            tool_results=tool_call_result_pairs if tool_call_result_pairs else None,
             suggestions=suggestions,
+            questions=questions,
             metadata=metadata
         )
     
@@ -436,10 +449,17 @@ class UnifiedAgent(BaseAgent):
         return actions
     
     def _extract_suggestions(self, tool_results: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
-        """从工具结果中提取建议选项"""
+        """从工具结果中提取建议选项（兼容旧版 provide_suggestions）"""
         for result in tool_results:
             if result.get("success") and "suggestions" in result:
                 return result["suggestions"]
+        return None
+    
+    def _extract_questions(self, tool_results: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+        """从工具结果中提取交互式问题（新版 ask_user_questions）"""
+        for result in tool_results:
+            if result.get("success") and "questions" in result:
+                return result["questions"]
         return None
     
     def _extract_query_results(self, tool_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

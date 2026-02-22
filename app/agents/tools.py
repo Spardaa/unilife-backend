@@ -421,6 +421,64 @@ def register_all_tools():
         func=tool_provide_suggestions
     )
 
+    # 11b. 交互式多问题工具（新版，支持多个问题）
+    tool_registry.register(
+        name="ask_user_questions",
+        description="向用户提出一个或多个交互式问题。当需要用户回答多个信息时（如时间段、时长、优先级等），使用此工具一次性提出所有问题，避免多轮追问。每个问题可以是单选、多选或文本输入类型。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "问题唯一标识（如 'time_period', 'duration'）"
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "问题文本（显示给用户）"
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["single_choice", "multiple_choice", "text_input"],
+                                "description": "问题类型：single_choice（单选）、multiple_choice（多选）、text_input（文本输入）"
+                            },
+                            "options": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {
+                                            "type": "string",
+                                            "description": "显示给用户的标签"
+                                        },
+                                        "value": {
+                                            "type": "string",
+                                            "description": "实际值"
+                                        }
+                                    },
+                                    "required": ["label", "value"]
+                                },
+                                "description": "选项列表（single_choice/multiple_choice 时必填）"
+                            },
+                            "placeholder": {
+                                "type": "string",
+                                "description": "输入提示（text_input 类型时使用）"
+                            }
+                        },
+                        "required": ["id", "text", "type"]
+                    },
+                    "description": "问题列表（1-5个问题）"
+                }
+            },
+            "required": ["questions"]
+        },
+        func=tool_ask_user_questions
+    )
+
     # 12. 分析用户偏好工具
     tool_registry.register(
         name="analyze_preferences",
@@ -1682,6 +1740,33 @@ async def tool_provide_suggestions(
         "success": True,
         "suggestions": suggestions,
         "message": "[OPTIONS] 已生成选项供用户选择"
+    }
+
+
+async def tool_ask_user_questions(
+    questions: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    向用户提出一个或多个交互式问题
+
+    支持多个问题类型：单选、多选、自由输入。
+    前端会根据问题类型渲染对应的 UI 组件。
+
+    Args:
+        questions: 问题列表，每个问题包含:
+            - id: 问题唯一标识
+            - text: 问题文本
+            - type: 问题类型 (single_choice/multiple_choice/text_input)
+            - options: 选项列表 (label, value)
+            - placeholder: 输入提示 (text_input 类型)
+
+    Returns:
+        包含 questions 的结果
+    """
+    return {
+        "success": True,
+        "questions": questions,
+        "message": "[QUESTIONS] 已生成问题供用户回答"
     }
 
 

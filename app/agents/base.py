@@ -73,9 +73,11 @@ class AgentResponse(BaseModel):
     """
     content: str = Field(default="", description="自然语言回复内容")
     tool_calls: Optional[List[Dict[str, Any]]] = Field(default=None, description="工具调用列表")
+    tool_results: Optional[List[Dict[str, Any]]] = Field(default=None, description="工具执行结果列表（与tool_calls一一对应，用于持久化上下文）")
     actions: List[Dict[str, Any]] = Field(default_factory=list, description="执行的操作记录")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="元数据（供下游 Agent 使用）")
     suggestions: Optional[List[Dict[str, Any]]] = None
+    questions: Optional[List[Dict[str, Any]]] = Field(default=None, description="交互式问题列表（支持多问题）")
     filtered_context: Optional[List[Dict[str, Any]]] = Field(default=None, description="Router筛选的相关上下文")
 
     class Config:

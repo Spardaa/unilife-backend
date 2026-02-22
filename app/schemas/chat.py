@@ -35,6 +35,21 @@ class Suggestion(BaseModel):
     probability: Optional[int] = Field(None, description="AI predicted probability (0-100) that user will choose this option")
 
 
+class InteractiveOption(BaseModel):
+    """Option for interactive question"""
+    label: str = Field(..., description="Display label shown to user")
+    value: str = Field(..., description="Actual value")
+
+
+class InteractiveQuestion(BaseModel):
+    """Interactive question for user to answer (supports multi-question)"""
+    id: str = Field(..., description="Question unique identifier")
+    text: str = Field(..., description="Question text displayed to user")
+    type: str = Field(..., description="Question type: single_choice, multiple_choice, text_input")
+    options: Optional[List[InteractiveOption]] = Field(None, description="Options list (required for choice types)")
+    placeholder: Optional[str] = Field(None, description="Input placeholder (for text_input type)")
+
+
 class QueryStats(BaseModel):
     """Statistics from query results"""
     total: Optional[int] = Field(None, description="Total count")
@@ -56,6 +71,7 @@ class ChatResponse(BaseModel):
     actions: List[ActionResult] = Field(default_factory=list, description="Actions taken by agent")
     snapshot_id: Optional[str] = Field(None, description="Snapshot ID if changes were made")
     suggestions: Optional[List[Suggestion]] = Field(None, description="Interactive suggestions for user to select")
+    questions: Optional[List[InteractiveQuestion]] = Field(None, description="Interactive questions for user to answer (multi-question support)")
     query_results: Optional[List[QueryResult]] = Field(None, description="Structured query results for UI rendering")
     conversation_id: Optional[str] = Field(None, description="Conversation ID for continuing this conversation")
 

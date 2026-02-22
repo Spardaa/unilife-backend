@@ -440,16 +440,18 @@ class ConversationService:
             all_messages = all_messages[-max_messages:]
 
             # 转换为带时间戳的格式（用户本地时间）
+            # 使用 to_chat_format() 保留完整的 tool_calls 和 tool_call_id 信息
+            # 这样 LLM 能看到之前调用的工具及其返回结果（如问题选项）
             result = []
             for msg in all_messages:
                 # 将 UTC 时间转换为用户本地时间
                 local_time = _get_user_local_time(msg.created_at, user_timezone)
                 timestamp = local_time.strftime("%H:%M")
-                result.append({
-                    "role": msg.role,
-                    "content": msg.content,
-                    "timestamp": f"[{timestamp}]"
-                })
+                
+                # 使用 to_chat_format 保留完整信息
+                chat_msg = msg.to_chat_format()
+                chat_msg["timestamp"] = f"[{timestamp}]"
+                result.append(chat_msg)
 
             return result
 

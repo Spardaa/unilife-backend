@@ -192,7 +192,9 @@ class AgentOrchestrator:
             "reply": unified_response.content,
             "actions": unified_response.actions or [],
             "tool_calls": unified_response.tool_calls or [],
+            "tool_results": unified_response.tool_results or [],
             "suggestions": unified_response.suggestions,
+            "questions": unified_response.questions,
             "query_results": unified_response.metadata.get("query_results", []) if unified_response.metadata else [],
             "routing_metadata": {
                 "mode": "unified",

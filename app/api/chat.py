@@ -73,25 +73,30 @@ async def chat(request: ChatRequest):
         suggestions = result.get("suggestions")
         routing_metadata = result.get("routing_metadata", {})
 
-        # 保存助手回复（不含 tool_calls，因为后面会单独保存）
-        assistant_msg_id = conversation_service.add_message(
+        # 保存助手回复（含 tool_calls 如果有）
+        tool_calls_json = None
+        if tool_calls:
+            tool_calls_json = json.dumps(tool_calls)
+        
+        assistant_msg = conversation_service.add_message(
             conversation_id=conversation_id,
             role="assistant",
-            content=reply
-        ).id
+            content=reply,
+            tool_calls=tool_calls_json
+        )
 
-        # 保存 tool_calls（如果有）
-        if tool_calls:
-            import json
-            from app.services.conversation_service import Message
-            db = conversation_service.get_session()
-            try:
-                msg = db.query(Message).filter(Message.id == assistant_msg_id).first()
-                if msg:
-                    msg.tool_calls = json.dumps(tool_calls)
-                    db.commit()
-            finally:
-                db.close()
+        # 🔧 核心修复：保存 tool 执行结果到数据库
+        # 这样下一轮对话加载历史时，tool_calls 和 tool results 配对完整
+        # LLM 就能知道上次问了什么问题、给出了什么选项
+        tool_result_pairs = result.get("tool_results", [])
+        if tool_result_pairs:
+            for pair in tool_result_pairs:
+                conversation_service.add_message(
+                    conversation_id=conversation_id,
+                    role="tool",
+                    content=pair.get("result", "{}"),
+                    tool_call_id=pair.get("tool_call_id")
+                )
 
         # Create snapshot if there were modifying actions
         snapshot_id = None
@@ -149,6 +154,29 @@ async def chat(request: ChatRequest):
                 for s in suggestions
             ]
 
+        # Convert questions to schema format
+        question_responses = None
+        questions_data = result.get("questions")
+        if questions_data:
+            from app.schemas.chat import InteractiveQuestion, InteractiveOption
+            question_responses = []
+            for q in questions_data:
+                options = None
+                if q.get("options"):
+                    options = [
+                        InteractiveOption(label=o.get("label", ""), value=o.get("value", ""))
+                        for o in q["options"]
+                    ]
+                question_responses.append(
+                    InteractiveQuestion(
+                        id=q.get("id", ""),
+                        text=q.get("text", ""),
+                        type=q.get("type", "single_choice"),
+                        options=options,
+                        placeholder=q.get("placeholder")
+                    )
+                )
+
         # Convert query_results to schema format
         query_results = result.get("query_results")
         query_result_responses = None
@@ -177,6 +205,7 @@ async def chat(request: ChatRequest):
             actions=action_responses,
             snapshot_id=snapshot_id,
             suggestions=suggestion_responses,
+            questions=question_responses,
             query_results=query_result_responses,
             conversation_id=conversation_id  # 返回对话ID，前端下次请求时带上
         )
