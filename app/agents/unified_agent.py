@@ -227,7 +227,7 @@ class UnifiedAgent(BaseAgent):
         
         # 注入用户项目
         try:
-            projects = await db_service.get_projects(context.user_id, active_only=True)
+            projects = await db_service.get_projects(context.user_id, is_active=True)
             projects_str = self._format_user_projects(projects)
         except Exception as e:
             logger.warning(f"Failed to load user projects: {e}")

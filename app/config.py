@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # LLM Configuration (GLM)
     glm_api_key: str
     glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"
-    glm_model: str = "glm-5"
+    glm_model: str = "glm-4.7"
 
     # JWT Configuration
     jwt_secret_key: str
