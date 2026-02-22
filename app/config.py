@@ -33,10 +33,10 @@ class Settings(BaseSettings):
     supabase_key: Optional[str] = None
     supabase_service_key: Optional[str] = None
 
-    # LLM Configuration (DeepSeek)
-    deepseek_api_key: str
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
-    deepseek_model: str = "deepseek-chat"
+    # LLM Configuration (GLM)
+    glm_api_key: str
+    glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"
+    glm_model: str = "glm-5"
 
     # JWT Configuration
     jwt_secret_key: str

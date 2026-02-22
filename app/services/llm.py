@@ -26,9 +26,9 @@ class LLMService:
     """Service for interacting with LLM (DeepSeek - OpenAI Compatible)"""
 
     def __init__(self):
-        self.api_key = settings.deepseek_api_key
-        self.base_url = settings.deepseek_base_url
-        self.model = settings.deepseek_model
+        self.api_key = settings.glm_api_key
+        self.base_url = settings.glm_base_url
+        self.model = settings.glm_model
         self.max_retries = 3
         self.retry_delay = 1.0
 

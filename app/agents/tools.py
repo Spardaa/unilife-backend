@@ -1736,6 +1736,11 @@ async def tool_provide_suggestions(
     Returns:
         包含 suggestions 的结果
     """
+    # 强制让 value = label，防止前端和 LLM 上下文断裂
+    for item in suggestions:
+        if item.get("value") is not None:
+            item["value"] = item.get("label", "")
+            
     return {
         "success": True,
         "suggestions": suggestions,
@@ -1763,6 +1768,13 @@ async def tool_ask_user_questions(
     Returns:
         包含 questions 的结果
     """
+    # 强制让 options 中的 value = label，防止前端和 LLM 上下文断裂
+    for question in questions:
+        if "options" in question and question["options"]:
+            for opt in question["options"]:
+                if opt.get("value") is not None:
+                    opt["value"] = opt.get("label", "")
+                    
     return {
         "success": True,
         "questions": questions,

@@ -1971,7 +1971,7 @@ class DatabaseService:
             return project.to_dict()
 
     async def delete_project(self, project_id: str, user_id: str) -> bool:
-        """Delete a project (soft delete by setting is_active=False)"""
+        """Delete a project (Hard delete project and all its events)"""
         self._ensure_initialized()
         with self.get_session() as session:
             project = session.query(ProjectModel).filter(
@@ -1982,9 +1982,14 @@ class DatabaseService:
             if not project:
                 return False
 
-            # Soft delete
-            project.is_active = False
-            project.updated_at = datetime.utcnow()
+            # Delete all events associated with this project
+            session.query(EventModel).filter(
+                EventModel.project_id == project_id,
+                EventModel.user_id == user_id
+            ).delete()
+
+            # Delete the project itself
+            session.delete(project)
             session.commit()
             return True
 

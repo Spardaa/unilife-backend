@@ -116,7 +116,7 @@ class LLMRequestLogger:
 
         self.logger.info(f"{'='*60}")
         self.logger.info(f"{LogColors.bold('LLM Request')} #{request_id} → {endpoint}")
-        self.logger.debug(f"  Model: {settings.deepseek_model}")
+        self.logger.debug(f"  Model: {settings.glm_model}")
         self.logger.debug(f"  Temperature: {temperature}")
         if max_tokens:
             self.logger.debug(f"  Max Tokens: {max_tokens}")
