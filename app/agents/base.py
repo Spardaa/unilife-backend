@@ -63,13 +63,6 @@ class IntentConfidence(BaseModel):
     reasoning: Optional[str] = None
 
 
-class RoutingDecision(str, Enum):
-    """路由决策 - 消息应该由哪些 Agent 处理"""
-    EXECUTOR = "executor"        # 只需要 Executor（工具调用）
-    PERSONA = "persona"          # 只需要 Persona（聊天）
-    BOTH = "both"                # 需要先 Executor 后 Persona（混合意图）
-
-
 # ============ Agent Response Models ============
 
 class AgentResponse(BaseModel):
@@ -82,7 +75,6 @@ class AgentResponse(BaseModel):
     tool_calls: Optional[List[Dict[str, Any]]] = Field(default=None, description="工具调用列表")
     actions: List[Dict[str, Any]] = Field(default_factory=list, description="执行的操作记录")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="元数据（供下游 Agent 使用）")
-    should_route_to: Optional[RoutingDecision] = Field(default=None, description="建议的路由决策")
     suggestions: Optional[List[Dict[str, Any]]] = None
     filtered_context: Optional[List[Dict[str, Any]]] = Field(default=None, description="Router筛选的相关上下文")
 
@@ -118,10 +110,6 @@ class ConversationContext(BaseModel):
 
     # 对话历史（LLM 格式）
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
-
-    # 上游 Agent 结果
-    executor_result: Optional[Dict[str, Any]] = None  # Executor 的执行结果
-    router_result: Optional[Dict[str, Any]] = None  # Router 的路由结果
 
     # 建议选项（从 Executor 的 provide_suggestions 工具返回）
     suggestions: Optional[List[Dict[str, Any]]] = None

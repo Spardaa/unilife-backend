@@ -121,6 +121,10 @@ def register_all_tools():
                     "type": "string",
                     "description": "地点（可选）"
                 },
+                "notes": {
+                    "type": "string",
+                    "description": "事件备注（可选）。适用于：1) 任务细节较多时，标题保持简洁，详细内容写在备注；2) 特殊任务可添加 unilife 温馨提示/建议；3) 需要提醒用户注意的事项"
+                },
                 "is_physically_demanding": {
                     "type": "boolean",
                     "description": "是否需要高强度体力消耗（如健身、搬家等）"
@@ -213,6 +217,10 @@ def register_all_tools():
                 "title": {
                     "type": "string",
                     "description": "新的事件标题"
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "新的事件备注内容"
                 },
                 "start_time": {
                     "type": "string",
@@ -1086,6 +1094,7 @@ async def tool_create_event(
     user_id: str,
     title: str,
     description: Optional[str] = None,
+    notes: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     time_period: Optional[str] = None,
@@ -1190,6 +1199,7 @@ async def tool_create_event(
         "user_id": user_id,
         "title": title,
         "description": description,
+        "notes": notes,
         "start_time": start_dt,
         "end_time": end_dt,
         "time_period": time_period,
@@ -1346,6 +1356,7 @@ async def tool_update_event(
     user_id: str,
     event_id: str,
     title: Optional[str] = None,
+    notes: Optional[str] = None,
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     time_period: Optional[str] = None,
@@ -1359,6 +1370,8 @@ async def tool_update_event(
     update_data = {}
     if title:
         update_data["title"] = title
+    if notes is not None:
+        update_data["notes"] = notes
     if start_time:
         update_data["start_time"] = parse_time_with_timezone(start_time)
     if end_time:

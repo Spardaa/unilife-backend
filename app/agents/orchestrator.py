@@ -13,58 +13,32 @@ import os
 
 from app.agents.base import (
     ConversationContext, AgentResponse,
-    Intent, RoutingDecision
+    Intent
 )
-from app.agents.router import router_agent
-from app.agents.executor import executor_agent
-from app.agents.persona import persona_agent
 from app.agents.observer import observer_agent
 from app.agents.observer_tracker import observer_trigger_tracker
 from app.services.profile_service import profile_service
 from app.services.conversation_service import conversation_service
 
-# 环境变量控制是否使用 Unified 模式
-# 设置 UNIFIED_AGENT_MODE=true 启用 1+1 架构
-UNIFIED_MODE = os.environ.get("UNIFIED_AGENT_MODE", "true").lower() == "true"
-
-
 class AgentOrchestrator:
     """
     智能体编排器 - 协调多 Agent 协作
 
-    支持两种架构模式：
-    
-    3+1 模式 (经典架构):
-    1. Router → 识别意图，决定路由
-    2. Executor → 执行工具调用（如果需要）
-    3. Persona → 生成拟人化回复
-    4. Observer → 异步分析，更新画像
-    
-    1+1 模式 (融合架构, unified_mode=True):
+    目前采用 1+1 模式 (融合架构):
     1. UnifiedAgent → 意图识别 + 工具调用 + 拟人化回复
     2. Observer → 异步分析，更新画像
-    
-    通过设置环境变量 UNIFIED_AGENT_MODE=true 或构造参数 unified_mode=True 切换模式
     """
 
-    def __init__(self, unified_mode: Optional[bool] = None):
-        # 决定使用哪种模式：参数优先，否则使用环境变量
-        self.unified_mode = unified_mode if unified_mode is not None else UNIFIED_MODE
-        
-        # 3+1 模式的 Agents
-        self.router = router_agent
-        self.executor = executor_agent
-        self.persona = persona_agent
-        
+    def __init__(self):
         # 共用的 Agents
         self.observer = observer_agent
         self.observer_tracker = observer_trigger_tracker
         self._background_task: Optional[asyncio.Task] = None
         
-        # 1+1 模式的 UnifiedAgent（延迟导入，避免循环依赖）
+        # 1+1 模式的 UnifiedAgent 和 ContextFilterAgent
         self._unified_agent = None
-        if self.unified_mode:
-            self._init_unified_agent()
+        self._context_filter = None
+        self._init_unified_agent()
     
     def _init_unified_agent(self):
         """初始化 UnifiedAgent 和 ContextFilterAgent（延迟导入）"""
@@ -78,7 +52,6 @@ class AgentOrchestrator:
         except ImportError as e:
             import logging
             logging.getLogger("orchestrator").error(f"Failed to import unified_agent or context_filter: {e}")
-            self.unified_mode = False
             self._context_filter = None
 
     def _get_conversation_logger(self):
@@ -133,8 +106,8 @@ class AgentOrchestrator:
                 current_time=current_time
             )
             
-            # 分支：Unified 模式使用单一 Agent 处理
-            if self.unified_mode and self._unified_agent:
+            # 2. 调用 Unified 模式
+            if self._unified_agent:
                 return await self._process_unified(
                     context=context,
                     user_id=user_id,
@@ -143,141 +116,8 @@ class AgentOrchestrator:
                     conv_logger=conv_logger,
                     logger=logger
                 )
-
-            # 2. Router 路由
-            router_start = time.time()
-            router_response = await self.router.process(context)
-            router_duration = time.time() - router_start
-            logger.debug(f"Router completed in {router_duration:.2f}s")
-
-            # 保存路由结果
-            context.router_result = router_response.metadata
-            context.current_intent = Intent.from_string(
-                router_response.metadata.get("intent", Intent.UNKNOWN)
-            )
-
-            # 使用 Router 筛选后的上下文（替换原始上下文）
-            if router_response.filtered_context is not None:
-                context.conversation_history = router_response.filtered_context
-                logger.debug(f"Context filtered: {router_response.metadata.get('original_context_count', 0)} → {len(router_response.filtered_context)} messages")
-
-            # 记录路由决策
-            routing_decision = router_response.should_route_to or RoutingDecision.PERSONA
-            conv_logger.log_routing(
-                routing_decision=routing_decision.value,
-                confidence=router_response.metadata.get("confidence", 0.0),
-                reasoning=router_response.metadata.get("reasoning", "")
-            )
-
-            # 3. 根据 Router 决策执行
-            executor_response = None
-            executor_duration = 0
-
-            if routing_decision in [RoutingDecision.EXECUTOR, RoutingDecision.BOTH]:
-                # 需要 Executor 执行
-                executor_start = time.time()
-                executor_response = await self.executor.process(context)
-                executor_duration = time.time() - executor_start
-                logger.debug(f"Executor completed in {executor_duration:.2f}s")
-
-                context.executor_result = executor_response.metadata
-                context.suggestions = executor_response.suggestions  # 设置 suggestions
-
-                # 提取操作和建议
-                actions = executor_response.actions
-                suggestions = executor_response.suggestions  # 修复：从 AgentResponse 属性获取
-                tool_calls = executor_response.tool_calls
-
-                # 记录执行的操作
-                conv_logger.log_actions(actions)
-
-            elif routing_decision == RoutingDecision.PERSONA:
-                # 只需要 Persona
-                actions = []
-                suggestions = None
-                tool_calls = []
-
-            # 4. Persona 生成最终回复
-            persona_start = time.time()
-            persona_response = await self.persona.process(context)
-            persona_duration = time.time() - persona_start
-            logger.debug(f"Persona completed in {persona_duration:.2f}s")
-
-            final_reply = persona_response.content
-
-            # 5. 构建返回结果
-            # 提取 query_results（从 Executor 的 metadata 中）
-            query_results = None
-            if executor_response and executor_response.metadata:
-                query_results = executor_response.metadata.get("query_results", [])
-
-            result = {
-                "reply": final_reply,
-                "actions": actions if routing_decision != RoutingDecision.PERSONA else [],
-                "tool_calls": tool_calls if routing_decision != RoutingDecision.PERSONA else [],
-                "suggestions": suggestions,
-                "query_results": query_results,  # 新增：结构化查询结果
-                "routing_metadata": {
-                    "intent": router_response.metadata.get("intent"),
-                    "routing": routing_decision.value,
-                    "confidence": router_response.metadata.get("confidence"),
-                    "reasoning": router_response.metadata.get("reasoning")
-                },
-                "timing": {
-                    "router": router_duration,
-                    "executor": executor_duration,
-                    "persona": persona_duration,
-                    "total": time.time() - start_time
-                }
-            }
-
-            # 记录最终回复
-            conv_logger.log_reply(final_reply)
-
-            # 6. 添加到 Observer 追踪器（延迟触发或阈值触发）
-            logger.debug("Adding conversation to Observer tracker...")
-
-            # 获取原始完整上下文（用于 Observer 分析）
-            # 从 conversation_service 获取未筛选的完整历史
-            from app.services.conversation_service import conversation_service
-            full_context = await conversation_service.get_recent_context(
-                user_id=user_id,
-                conversation_id=conversation_id,
-                hours=72,
-                max_messages=100  # Observer 获取更多历史
-            )
-
-            # 添加到追踪器
-            trigger_info = self.observer_tracker.add_message(
-                conversation_id=conversation_id,
-                user_id=user_id,
-                conversation_context=full_context
-            )
-
-            # 如果达到阈值，立即触发分析
-            if trigger_info:
-                logger.info(f"Observer threshold triggered: {trigger_info['trigger_type']}, messages: {trigger_info['message_count']}")
-                asyncio.create_task(
-                    self.observer.analyze_conversation_batch(
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        full_context=trigger_info['full_context']
-                    )
-                )
-
-            # 启动后台任务检查延迟触发（如果还没启动）
-            if self._background_task is None or self._background_task.done():
-                self._background_task = asyncio.create_task(
-                    self._observer_background_loop()
-                )
-
-            # 记录对话结束
-            conv_logger.log_end()
-
-            total_duration = time.time() - start_time
-            logger.info(f"Total processing time: {total_duration:.2f}s")
-
-            return result
+            else:
+                raise RuntimeError("UnifiedAgent is not initialized correctly.")
 
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
@@ -590,19 +430,14 @@ class AgentOrchestrator:
         """
         result = {
             "orchestrator": "ok",
-            "mode": "unified (1+1)" if self.unified_mode else "classic (3+1)",
+            "mode": "unified (1+1)",
             "agents": {
                 "observer": self.observer.name
             }
         }
         
-        if self.unified_mode:
-            result["agents"]["unified"] = self._unified_agent.name if self._unified_agent else "not loaded"
-            result["agents"]["context_filter"] = self._context_filter.name if self._context_filter else "not loaded"
-        else:
-            result["agents"]["router"] = self.router.name
-            result["agents"]["executor"] = self.executor.name
-            result["agents"]["persona"] = self.persona.name
+        result["agents"]["unified"] = self._unified_agent.name if self._unified_agent else "not loaded"
+        result["agents"]["context_filter"] = self._context_filter.name if self._context_filter else "not loaded"
         
         return result
 

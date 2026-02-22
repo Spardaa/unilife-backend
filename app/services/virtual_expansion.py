@@ -114,6 +114,12 @@ class VirtualExpansionService:
 
         occurrences = []
 
+        # Ensure start_date and end_date are timezone-aware
+        if start_date.tzinfo is None:
+            start_date = self.tz.localize(start_date)
+        if end_date.tzinfo is None:
+            end_date = self.tz.localize(end_date)
+
         # Get reference date (when the pattern started)
         original_start = template.get("event_date") or template.get("created_at")
         if isinstance(original_start, str):

@@ -62,6 +62,9 @@ async def get_events(
     if project_id:
         filters["project_id"] = project_id
 
+    original_start_date = start_date
+    original_end_date = end_date
+
     # Determine date range for expansion
     # If no range specified, use current month
     if not start_date or not end_date:
@@ -73,12 +76,22 @@ async def get_events(
             next_month = start_date.replace(day=28) + timedelta(days=4)
             end_date = next_month.replace(day=1) - timedelta(seconds=1)
 
+    # Determine database query date range
+    db_start_date = start_date
+    db_end_date = end_date
+
+    # If querying for a specific project without explicit date filters,
+    # we want ALL tasks in the project regardless of their date
+    if project_id and not original_start_date and not original_end_date:
+        db_start_date = None
+        db_end_date = None
+
     # Get real instances (exclude templates)
     instances = await db_service.get_events(
         user_id=user_id,
         filters=filters,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=db_start_date,
+        end_date=db_end_date,
         limit=limit
     )
 
