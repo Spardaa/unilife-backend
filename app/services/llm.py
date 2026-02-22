@@ -26,9 +26,9 @@ class LLMService:
     """Service for interacting with LLM (DeepSeek - OpenAI Compatible)"""
 
     def __init__(self):
-        self.api_key = settings.glm_api_key
-        self.base_url = settings.glm_base_url
-        self.model = settings.glm_model
+        self.api_key = settings.qwen_api_key
+        self.base_url = settings.qwen_base_url
+        self.model = settings.qwen_model
         self.max_retries = 3
         self.retry_delay = 1.0
 
@@ -80,6 +80,7 @@ class LLMService:
             try:
                 self.llm_logger.log_request(
                     endpoint=endpoint,
+                    model=payload.get("model", settings.qwen_model),
                     messages=payload.get("messages", []),
                     temperature=payload.get("temperature", 0.7),
                     tools=payload.get("tools"),
@@ -190,7 +191,8 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Send chat completion request to LLM
@@ -204,7 +206,7 @@ class LLMService:
             Response dictionary with 'content' and other fields
         """
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "temperature": temperature,
         }
@@ -224,7 +226,8 @@ class LLMService:
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         tool_choice: str = "auto",
-        temperature: float = 0.3
+        temperature: float = 0.3,
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Send tools calling request to LLM (OpenAI Format)
@@ -239,7 +242,7 @@ class LLMService:
             Response with tool_calls or content
         """
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "tools": tools,
             "tool_choice": tool_choice,
@@ -260,7 +263,8 @@ class LLMService:
         self,
         messages: List[Dict[str, str]],
         functions: List[Dict[str, Any]],
-        function_call: str = "auto"
+        function_call: str = "auto",
+        model: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Send function calling request to LLM (Legacy Format)
@@ -274,7 +278,7 @@ class LLMService:
             Response with function call or content
         """
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "functions": functions,
             "function_call": function_call,

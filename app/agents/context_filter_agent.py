@@ -17,6 +17,7 @@ from app.services.memory_service import memory_service
 from app.agents.base import (
     BaseAgent, ConversationContext, AgentResponse, build_messages_from_context
 )
+from app.config import settings
 
 
 logger = logging.getLogger("context_filter")
@@ -178,7 +179,8 @@ class ContextFilterAgent(BaseAgent):
             messages=messages,
             tools=tools,
             tool_choice="required",
-            temperature=0.2  # 低温度，更确定性
+            temperature=0.2,  # 低温度，更确定性
+            model=settings.qwen_filter_model
         )
         
         # 解析结果

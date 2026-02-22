@@ -107,6 +107,7 @@ class LLMRequestLogger:
         endpoint: str,
         messages: List[Dict[str, Any]],
         temperature: float,
+        model: str,
         tools: Optional[List[Dict]] = None,
         max_tokens: Optional[int] = None
     ):
@@ -116,7 +117,7 @@ class LLMRequestLogger:
 
         self.logger.info(f"{'='*60}")
         self.logger.info(f"{LogColors.bold('LLM Request')} #{request_id} → {endpoint}")
-        self.logger.debug(f"  Model: {settings.glm_model}")
+        self.logger.debug(f"  Model: {model}")
         self.logger.debug(f"  Temperature: {temperature}")
         if max_tokens:
             self.logger.debug(f"  Max Tokens: {max_tokens}")

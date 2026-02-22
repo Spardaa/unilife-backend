@@ -33,10 +33,11 @@ class Settings(BaseSettings):
     supabase_key: Optional[str] = None
     supabase_service_key: Optional[str] = None
 
-    # LLM Configuration (GLM)
-    glm_api_key: str
-    glm_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"
-    glm_model: str = "glm-5"
+    # LLM Configuration (Qwen)
+    qwen_api_key: str
+    qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwen_model: str = "qwen3-max"
+    qwen_filter_model: str = "qwen-flash"
 
     # JWT Configuration
     jwt_secret_key: str
