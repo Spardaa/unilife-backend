@@ -26,11 +26,15 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     """User login request"""
     user_id: str = Field(..., min_length=1, description="User ID")
+    email: Optional[str] = Field(None, description="User email (optional, used for account recovery)")
+    nickname: Optional[str] = Field(None, description="User nickname (optional, used for new registration)")
 
     class Config:
         json_schema_extra = {
             "example": {
-                "user_id": "user_abc123"
+                "user_id": "user_abc123",
+                "email": "user@example.com",
+                "nickname": "Alex"
             }
         }
 

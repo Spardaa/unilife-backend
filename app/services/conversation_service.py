@@ -405,6 +405,22 @@ class ConversationService:
             # 计算时间边界
             since = datetime.utcnow() - timedelta(hours=hours)
 
+            # 检查用户是否清空过聊天上下文
+            from app.services.db import UserModel, db_service
+            from sqlalchemy import or_ as sql_or
+            db_service._ensure_initialized()
+            user_session = db_service.get_session()
+            try:
+                user_record = user_session.query(UserModel).filter(
+                    sql_or(UserModel.id == user_id, UserModel.user_id == user_id)
+                ).first()
+                if user_record and user_record.chat_cleared_at:
+                    # 使用 chat_cleared_at 和 since 中更晚的那个作为起始时间
+                    if user_record.chat_cleared_at > since:
+                        since = user_record.chat_cleared_at
+            finally:
+                user_session.close()
+
             # 获取当前对话
             current_conv = db.query(Conversation).filter(
                 Conversation.id == conversation_id

@@ -246,6 +246,48 @@ async def chat_feedback(request: Dict[str, Any]):
     }
 
 
+@router.post("/chat/clear_context")
+async def clear_chat_context(request: Dict[str, Any]):
+    """
+    清空聊天上下文 - 记录清空时间戳
+
+    前端聊天界面清空后调用此接口,
+    后端记录 chat_cleared_at 时间戳,
+    后续 get_recent_context 会过滤掉此时间之前的消息。
+    数据库中的聊天记录不会被删除，用户仍可通过日期查询历史记录。
+    """
+    user_id = request.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    try:
+        from app.services.db import db_service, UserModel
+        from sqlalchemy import or_
+        db_service._ensure_initialized()
+        session = db_service.get_session()
+        try:
+            user = session.query(UserModel).filter(
+                or_(UserModel.id == user_id, UserModel.user_id == user_id)
+            ).first()
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            user.chat_cleared_at = datetime.utcnow()
+            session.commit()
+
+            return {
+                "status": "success",
+                "message": "聊天上下文已清空",
+                "cleared_at": user.chat_cleared_at.isoformat()
+            }
+        finally:
+            session.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"清空聊天上下文失败: {str(e)}")
+
+
 # Conversation Management Endpoints
 
 @router.post("/conversations", response_model=ConversationResponse)

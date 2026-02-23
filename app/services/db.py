@@ -76,6 +76,9 @@ class UserModel(Base):
     # Preferences
     preferences = Column(JSON, nullable=False, default=DEFAULT_USER_PREFERENCES)
 
+    # Chat context clear timestamp
+    chat_cleared_at = Column(DateTime, nullable=True)  # 用户上次清空聊天上下文的时间
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     last_active_at = Column(DateTime, default=datetime.utcnow)
@@ -93,6 +96,7 @@ class UserModel(Base):
             "energy_profile": self.energy_profile,
             "current_energy": self.current_energy,
             "preferences": self.preferences,
+            "chat_cleared_at": self.chat_cleared_at.isoformat() if self.chat_cleared_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_active_at": self.last_active_at.isoformat() if self.last_active_at else None,
         }

@@ -68,24 +68,56 @@ async def login(request: LoginRequest):
     Authenticates a user using their user ID and returns access/refresh tokens.
     If the user doesn't exist, they will be auto-registered.
     """
-    # Try to find existing user
+    # Try to find existing user by Apple user_id
     existing_user = await db_service.get_user_by_user_id(request.user_id)
 
     if existing_user:
         # User exists - update last_active_at and return tokens
         db_user_id = existing_user["id"]
-        await db_service.update_user(db_user_id, {"last_active_at": datetime.utcnow()})
+        update_data = {"last_active_at": datetime.utcnow()}
+        # Save email/nickname if they were not set before
+        if request.email and not existing_user.get("email"):
+            update_data["email"] = request.email
+        if request.nickname and existing_user.get("nickname") == existing_user.get("user_id"):
+            update_data["nickname"] = request.nickname
+            
+        await db_service.update_user(db_user_id, update_data)
 
         tokens = token_service.create_token_pair(db_user_id)
         return AuthResponse(
             user_id=db_user_id,
             **tokens
         )
+        
+    # User not found by user_id. Check if we can find them by email.
+    if request.email:
+        from app.services.db import UserModel
+        db_service._ensure_initialized()
+        with db_service.get_session() as session:
+            user_by_email = session.query(UserModel).filter(UserModel.email == request.email).first()
+            if user_by_email:
+                db_user_id = user_by_email.id
+                
+                # We found an old account with the same email! 
+                # Update their Apple user_id to the new one, so next time it finds them by user_id
+                user_by_email.user_id = request.user_id
+                user_by_email.last_active_at = datetime.utcnow()
+                if request.nickname and user_by_email.nickname == user_by_email.user_id:
+                    user_by_email.nickname = request.nickname
+                
+                session.commit()
+                
+                tokens = token_service.create_token_pair(db_user_id)
+                return AuthResponse(
+                    user_id=db_user_id,
+                    **tokens
+                )
 
     # Auto-register new user
     user_data = {
         "user_id": request.user_id,
-        "nickname": request.user_id,  # Default to user_id as nickname
+        "email": request.email,
+        "nickname": request.nickname or request.user_id,  # Default to user_id if no nickname
         "timezone": "Asia/Shanghai",
         "created_at": datetime.utcnow(),
         "last_active_at": datetime.utcnow()
