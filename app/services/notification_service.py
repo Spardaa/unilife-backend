@@ -412,6 +412,19 @@ class NotificationService:
                 record.error_message = f"APNs Error {status_code_str}: {stderr_output or 'Unknown error'}"
                 print(f"[APNs] Failed to send via curl. Status: {status_code_str}. Error: {stderr_output}")
                 print(f"[APNs] Command: {' '.join(cmd)}")
+                
+                # 410 = token 永久失效（App 已卸载或 token 已更新）
+                # Apple 官方要求收到 410 后停止向该 token 发送推送
+                if status_code_str == "410":
+                    try:
+                        with self.get_session() as session:
+                            db_device = session.query(DeviceDB).filter(DeviceDB.id == device.id).first()
+                            if db_device:
+                                db_device.is_active = False
+                                session.commit()
+                                print(f"[APNs] Deactivated expired device {device.token[:10]}...")
+                    except Exception as deactivate_err:
+                        print(f"[APNs] Failed to deactivate device: {deactivate_err}")
 
             return self._save_record(record)
 

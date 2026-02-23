@@ -401,6 +401,12 @@ class BackgroundTaskScheduler:
                         # - 这确保每个事件只在一个时间窗口内触发一次
                         if time_diff > 0 and (reminder_minutes - 1) < time_diff <= reminder_minutes:
                             # 先检查是否已发送过提醒(在构建列表前就去重)
+                            # 注意: DB 中 created_at 是 UTC 格式 "YYYY-MM-DD HH:MM:SS"
+                            # 必须用相同格式的 UTC 时间做比较，否则 SQLite 字符串比较会失败
+                            today_start_local = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                            today_start_utc = user_tz.localize(today_start_local).astimezone(pytz.UTC)
+                            today_start_str = today_start_utc.strftime("%Y-%m-%d %H:%M:%S")
+                            
                             already_sent = conn.execute(
                                 text("""
                                     SELECT id FROM notifications 
@@ -412,7 +418,7 @@ class BackgroundTaskScheduler:
                                 {
                                     "user_id": user_uuid,
                                     "event_pattern": f'%{event_id}%',
-                                    "today_start": current_time.replace(hour=0, minute=0, second=0).isoformat()
+                                    "today_start": today_start_str
                                 }
                             ).fetchone()
                             
@@ -585,12 +591,17 @@ class BackgroundTaskScheduler:
             
             with engine.connect() as conn:
                 # 获取7天内有活动的用户
-                seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
+                # 注意: DB 中时间戳是 UTC 格式 "YYYY-MM-DD HH:MM:SS"
+                user_tz = pytz.timezone("Asia/Shanghai")
+                now_local = datetime.now(user_tz).replace(tzinfo=None)
+                seven_days_ago_local = now_local - timedelta(days=7)
+                seven_days_ago_utc = user_tz.localize(seven_days_ago_local).astimezone(pytz.UTC)
+                seven_days_ago_str = seven_days_ago_utc.strftime("%Y-%m-%d %H:%M:%S")
                 
                 result = conn.execute(
                     text("""SELECT DISTINCT user_id FROM users
                            WHERE last_active_at >= :since OR created_at >= :since"""),
-                    {"since": seven_days_ago}
+                    {"since": seven_days_ago_str}
                 ).fetchall()
                 
                 return [row[0] for row in result if row[0]]
@@ -608,13 +619,18 @@ class BackgroundTaskScheduler:
         engine = create_engine(f"sqlite:///{db_path}")
 
         with engine.connect() as conn:
-            start_datetime = datetime.combine(target_date, datetime.min.time())
-            end_datetime = datetime.combine(target_date, datetime.max.time())
+            # 注意: DB 中时间戳是 UTC 格式 "YYYY-MM-DD HH:MM:SS"
+            # 需要将本地日期转换为 UTC 范围
+            user_tz = pytz.timezone("Asia/Shanghai")
+            start_local = datetime.combine(target_date, datetime.min.time())
+            end_local = datetime.combine(target_date, datetime.max.time())
+            start_utc = user_tz.localize(start_local).astimezone(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S")
+            end_utc = user_tz.localize(end_local).astimezone(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
             result = conn.execute(
                 text("""SELECT DISTINCT user_id FROM conversations
                        WHERE created_at >= :start AND created_at <= :end"""),
-                {"start": start_datetime.isoformat(), "end": end_datetime.isoformat()}
+                {"start": start_utc, "end": end_utc}
             ).fetchall()
 
             return [row[0] for row in result]
@@ -628,8 +644,12 @@ class BackgroundTaskScheduler:
         engine = create_engine(f"sqlite:///{db_path}")
 
         with engine.connect() as conn:
-            start_datetime = datetime.combine(target_date, datetime.min.time())
-            end_datetime = datetime.combine(target_date, datetime.max.time())
+            # 注意: DB 中时间戳是 UTC 格式 "YYYY-MM-DD HH:MM:SS"
+            user_tz = pytz.timezone("Asia/Shanghai")
+            start_local = datetime.combine(target_date, datetime.min.time())
+            end_local = datetime.combine(target_date, datetime.max.time())
+            start_utc = user_tz.localize(start_local).astimezone(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S")
+            end_utc = user_tz.localize(end_local).astimezone(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
             result = conn.execute(
                 text("""SELECT id FROM conversations
@@ -637,8 +657,8 @@ class BackgroundTaskScheduler:
                        AND created_at >= :start AND created_at <= :end"""),
                 {
                     "user_id": user_id,
-                    "start": start_datetime.isoformat(),
-                    "end": end_datetime.isoformat()
+                    "start": start_utc,
+                    "end": end_utc
                 }
             ).fetchall()
 
