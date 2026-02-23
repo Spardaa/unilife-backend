@@ -30,6 +30,7 @@ class DailyNotificationScheduler:
     
     def __init__(self):
         self.db_service = None  # 延迟加载
+        self._profile_key_cache = {}  # UUID → Apple ID 缓存
     
     def _get_db_service(self):
         """延迟加载数据库服务"""
@@ -37,6 +38,31 @@ class DailyNotificationScheduler:
             from app.services.db import db_service
             self.db_service = db_service
         return self.db_service
+    
+    def _resolve_profile_key(self, user_id: str) -> str:
+        """将 UUID 转为 Apple ID 用于 profile 查询
+        
+        user_profiles 表以 Apple ID 为 key，但调度器传入的是 UUID。
+        若无法解析则回退到原始 user_id。
+        """
+        if user_id in self._profile_key_cache:
+            return self._profile_key_cache[user_id]
+        
+        try:
+            from sqlalchemy import create_engine, text
+            from app.config import settings
+            db_path = settings.database_url.replace("sqlite:///", "")
+            engine = create_engine(f"sqlite:///{db_path}")
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text("SELECT user_id FROM users WHERE id = :id"),
+                    {"id": user_id}
+                ).fetchone()
+                apple_id = result[0] if result else user_id
+                self._profile_key_cache[user_id] = apple_id
+                return apple_id
+        except Exception:
+            return user_id
     
     # ==================== 早安简报 ====================
     
@@ -93,7 +119,9 @@ class DailyNotificationScheduler:
                 return False
             
             checker = get_user_awake_checker(settings)
-            if not checker.should_send_notification("afternoon_checkin") and not force:
+            import pytz
+            current_bj = datetime.now(pytz.timezone("Asia/Shanghai"))
+            if not checker.should_send_notification("afternoon_checkin", current_time=current_bj) and not force:
                 return False
             
             # 获取下午日程
@@ -137,7 +165,9 @@ class DailyNotificationScheduler:
                 return False
             
             checker = get_user_awake_checker(settings)
-            if not checker.should_send_notification("evening_switch") and not force:
+            import pytz
+            current_bj = datetime.now(pytz.timezone("Asia/Shanghai"))
+            if not checker.should_send_notification("evening_switch", current_time=current_bj) and not force:
                 return False
             
             # 获取晚间日程
@@ -234,7 +264,8 @@ class DailyNotificationScheduler:
         """获取用户通知设置"""
         try:
             from app.services.profile_service import profile_service
-            profile = profile_service.get_or_create_profile(user_id)
+            profile_key = self._resolve_profile_key(user_id)
+            profile = profile_service.get_or_create_profile(profile_key)
             return profile.preferences
         except Exception as e:
             print(f"[DailyNotification] Error getting user settings: {e}")

@@ -35,7 +35,7 @@ class BackgroundTaskScheduler:
         # 每日凌晨 3:00 分析用户偏好
         self.scheduler.add_job(
             self._analyze_daily_preferences,
-            trigger=CronTrigger(hour=3, minute=0),
+            trigger=CronTrigger(hour=3, minute=0, timezone="Asia/Shanghai"),
             id="analyze_daily_preferences",
             name="Analyze Daily User Preferences",
             replace_existing=True
@@ -44,7 +44,7 @@ class BackgroundTaskScheduler:
         # 每分钟检查并发送用户个性化通知
         self.scheduler.add_job(
             self._check_and_send_notifications,
-            trigger=CronTrigger(minute="*"),  # 每分钟
+            trigger=CronTrigger(minute="*", timezone="Asia/Shanghai"),  # 每分钟
             id="check_user_notifications",
             name="Check and Send User Notifications",
             replace_existing=True
@@ -53,7 +53,7 @@ class BackgroundTaskScheduler:
         # 每分钟处理待发送的定时通知(Event Reminders)
         self.scheduler.add_job(
             self._process_pending_notifications,
-            trigger=CronTrigger(minute="*"),  # 每分钟
+            trigger=CronTrigger(minute="*", timezone="Asia/Shanghai"),  # 每分钟
             id="process_pending_notifications",
             name="Process Pending Notifications",
             replace_existing=True
@@ -62,7 +62,7 @@ class BackgroundTaskScheduler:
         # 每分钟检查即将开始的事件并发送提醒
         self.scheduler.add_job(
             self._check_event_reminders,
-            trigger=CronTrigger(minute="*"),  # 每分钟
+            trigger=CronTrigger(minute="*", timezone="Asia/Shanghai"),  # 每分钟
             id="check_event_reminders",
             name="Check Event Reminders",
             replace_existing=True
@@ -71,7 +71,7 @@ class BackgroundTaskScheduler:
         # 每日凌晨 2:30 写日记 + 分析
         self.scheduler.add_job(
             self._write_daily_diaries,
-            trigger=CronTrigger(hour=2, minute=30),
+            trigger=CronTrigger(hour=2, minute=30, timezone="Asia/Shanghai"),
             id="write_daily_diaries",
             name="Write Daily Diaries",
             replace_existing=True
@@ -80,7 +80,7 @@ class BackgroundTaskScheduler:
         # 每周日凌晨 4:00 精炼旧记忆
         self.scheduler.add_job(
             self._consolidate_memories,
-            trigger=CronTrigger(day_of_week="sun", hour=4, minute=0),
+            trigger=CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="Asia/Shanghai"),
             id="consolidate_memories",
             name="Weekly Memory Consolidation",
             replace_existing=True
@@ -185,11 +185,11 @@ class BackgroundTaskScheduler:
             print(f"[Scheduler] Checking notifications at {current_hm}")
         
         try:
-            # 获取所有活跃用户
+            # 获取所有活跃用户 (返回 UUID)
             user_ids = self._get_all_active_users()
             
             for user_id in user_ids:
-                await self._check_user_notifications(user_id, current_hm)
+                await self._check_user_notifications(user_id, current_hm, current_time)
                 
         except Exception as e:
             print(f"[Scheduler] Error checking notifications: {e}")
@@ -513,12 +513,22 @@ class BackgroundTaskScheduler:
                 
         return None
 
-    async def _check_user_notifications(self, user_id: str, current_hm: str):
-        """检查单个用户的通知时间点"""
+    async def _check_user_notifications(self, user_id: str, current_hm: str, current_time_dt: datetime = None):
+        """
+        检查单个用户的通知时间点
+        
+        Args:
+            user_id: 用户 UUID (users.id)
+            current_hm: 当前时间 HH:MM 格式
+            current_time_dt: 当前北京时间 datetime 对象
+        """
         try:
             # 获取用户设置
+            # user_id 是 UUID，需要找到对应的 Apple ID 来查 profile
             from app.services.profile_service import profile_service
-            profile = profile_service.get_or_create_profile(user_id)
+            apple_id = self._get_apple_id(user_id)
+            profile_key = apple_id if apple_id else user_id
+            profile = profile_service.get_or_create_profile(profile_key)
             settings = profile.preferences
             
             wake_time = settings.get("wake_time", "08:00")
@@ -526,19 +536,23 @@ class BackgroundTaskScheduler:
             
             # 早安简报 - 用户起床时间
             if current_hm == wake_time:
+                print(f"[Scheduler] Triggering morning briefing for user {user_id[:8]}... (profile: {profile_key[:8]}...)")
                 await self.notification_scheduler.send_morning_briefing(user_id)
             
             # 午间检查 - 固定 12:00
             if current_hm == "12:00":
+                print(f"[Scheduler] Triggering afternoon check-in for user {user_id[:8]}...")
                 await self.notification_scheduler.send_afternoon_checkin(user_id)
             
             # 晚间切换 - 固定 18:00
             if current_hm == "18:00":
+                print(f"[Scheduler] Triggering evening switch for user {user_id[:8]}...")
                 await self.notification_scheduler.send_evening_switch(user_id)
             
             # 睡前仪式 - 睡觉时间前15分钟
             ritual_time = self._subtract_minutes(sleep_time, 15)
             if current_hm == ritual_time:
+                print(f"[Scheduler] Triggering closing ritual for user {user_id[:8]}...")
                 await self.notification_scheduler.send_closing_ritual(user_id)
             
             # === 自主检查 (Proactive Check) ===
@@ -581,7 +595,11 @@ class BackgroundTaskScheduler:
             return time_str
     
     def _get_all_active_users(self) -> List[str]:
-        """获取所有活跃用户(7天内有活动)"""
+        """获取所有活跃用户的 UUID (7天内有活动)
+        
+        Returns:
+            用户 UUID 列表 (users.id)，与 devices.user_id 一致
+        """
         from sqlalchemy import create_engine, text
         from app.config import settings
         
@@ -598,8 +616,10 @@ class BackgroundTaskScheduler:
                 seven_days_ago_utc = user_tz.localize(seven_days_ago_local).astimezone(pytz.UTC)
                 seven_days_ago_str = seven_days_ago_utc.strftime("%Y-%m-%d %H:%M:%S")
                 
+                # 返回 id (UUID) 而非 user_id (Apple ID)
+                # 因为 devices.user_id 关联的是 users.id (UUID)
                 result = conn.execute(
-                    text("""SELECT DISTINCT user_id FROM users
+                    text("""SELECT DISTINCT id FROM users
                            WHERE last_active_at >= :since OR created_at >= :since"""),
                     {"since": seven_days_ago_str}
                 ).fetchall()
@@ -608,6 +628,32 @@ class BackgroundTaskScheduler:
         except Exception as e:
             print(f"[Scheduler] Error getting active users: {e}")
             return []
+    
+    def _get_apple_id(self, uuid_id: str) -> Optional[str]:
+        """从 UUID 获取 Apple ID (user_id 列)
+        
+        Args:
+            uuid_id: 用户 UUID (users.id)
+            
+        Returns:
+            Apple ID 字符串，如果找不到则返回 None
+        """
+        from sqlalchemy import create_engine, text
+        from app.config import settings
+        
+        try:
+            db_path = settings.database_url.replace("sqlite:///", "")
+            engine = create_engine(f"sqlite:///{db_path}")
+            
+            with engine.connect() as conn:
+                result = conn.execute(
+                    text("SELECT user_id FROM users WHERE id = :id"),
+                    {"id": uuid_id}
+                ).fetchone()
+                return result[0] if result else None
+        except Exception as e:
+            print(f"[Scheduler] Error getting apple_id for {uuid_id}: {e}")
+            return None
 
 
     def _get_active_users_for_date(self, target_date: date) -> List[str]:
