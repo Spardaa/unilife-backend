@@ -214,7 +214,7 @@ class ProactiveCheckAgent:
                     "check_type": check_type
                 }
             )
-            await notification_service.send_notification(user_id, payload)
+            await notification_service.send_notification(user_id, payload, notification_type=NotificationType.PROACTIVE_CHECK)
             logger.info(f"Proactive message sent to {user_id}: {message[:50]}...")
         except Exception as ex:
             logger.warning(f"Failed to send proactive notification: {ex}")
