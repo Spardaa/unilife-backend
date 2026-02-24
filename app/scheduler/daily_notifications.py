@@ -63,6 +63,43 @@ class DailyNotificationScheduler:
                 return apple_id
         except Exception:
             return user_id
+            
+    async def _has_sent_notification_today(self, user_id: str, category: str) -> bool:
+        """检查今天是否已经发送过该类型的通知（防重查询）"""
+        try:
+            from sqlalchemy import create_engine, text
+            from app.config import settings
+            import pytz
+            
+            db_path = settings.database_url.replace("sqlite:///", "")
+            engine = create_engine(f"sqlite:///{db_path}")
+            
+            user_tz = pytz.timezone("Asia/Shanghai")
+            now = datetime.now(user_tz)
+            start_of_day = datetime.combine(now.date(), time.min)
+            start_utc_str = user_tz.localize(start_of_day).astimezone(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S")
+            
+            with engine.connect() as conn:
+                # 检查 notifications 表中今天是否已有该用户的记录
+                # JSON提取category可能因数据库版本而异，这里使用 LIKE 模糊匹配作为轻量降级方案
+                result = conn.execute(
+                    text("""
+                        SELECT 1 FROM notifications 
+                        WHERE user_id = :user_id 
+                        AND created_at >= :start_of_day
+                        AND payload LIKE :category_pattern
+                        LIMIT 1
+                    """),
+                    {
+                        "user_id": user_id, 
+                        "start_of_day": start_utc_str,
+                        "category_pattern": f'%"category": "{category}"%'
+                    }
+                ).fetchone()
+                return result is not None
+        except Exception as e:
+            print(f"[DailyNotification] Error checking duplicate notification: {e}")
+            return False
     
     # ==================== 早安简报 ====================
     
@@ -77,6 +114,11 @@ class DailyNotificationScheduler:
             # 检查用户是否启用此通知
             settings = await self._get_user_notification_settings(user_id)
             if not settings.get("morning_briefing_enabled", True) and not force:
+                return False
+                
+            # 并发去重检查：确保今天没有发过
+            if await self._has_sent_notification_today(user_id, "MORNING_NOTIFICATION"):
+                print(f"[DailyNotification] Morning briefing already sent today for {user_id}, skipping.")
                 return False
             
             # 获取今日日程
@@ -122,6 +164,11 @@ class DailyNotificationScheduler:
             import pytz
             current_bj = datetime.now(pytz.timezone("Asia/Shanghai"))
             if not checker.should_send_notification("afternoon_checkin", current_time=current_bj) and not force:
+                return False
+                
+            # 并发去重检查
+            if await self._has_sent_notification_today(user_id, "AFTERNOON_NOTIFICATION"):
+                print(f"[DailyNotification] Afternoon check-in already sent today for {user_id}, skipping.")
                 return False
             
             # 获取下午日程
@@ -169,6 +216,11 @@ class DailyNotificationScheduler:
             current_bj = datetime.now(pytz.timezone("Asia/Shanghai"))
             if not checker.should_send_notification("evening_switch", current_time=current_bj) and not force:
                 return False
+                
+            # 并发去重检查
+            if await self._has_sent_notification_today(user_id, "EVENING_NOTIFICATION"):
+                print(f"[DailyNotification] Evening switch already sent today for {user_id}, skipping.")
+                return False
             
             # 获取晚间日程
             evening_events = await self._get_evening_events(user_id)
@@ -210,6 +262,11 @@ class DailyNotificationScheduler:
         try:
             settings = await self._get_user_notification_settings(user_id)
             if not settings.get("closing_ritual_enabled", True) and not force:
+                return False
+                
+            # 并发去重检查
+            if await self._has_sent_notification_today(user_id, "NIGHT_NOTIFICATION"):
+                print(f"[DailyNotification] Closing ritual already sent today for {user_id}, skipping.")
                 return False
             
             # 获取今日全部任务（包含完成和未完成）
