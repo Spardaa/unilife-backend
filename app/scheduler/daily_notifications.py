@@ -64,42 +64,44 @@ class DailyNotificationScheduler:
         except Exception:
             return user_id
             
-    async def _has_sent_notification_today(self, user_id: str, category: str) -> bool:
-        """检查今天是否已经发送过该类型的通知（防重查询）"""
+    def _acquire_scheduler_lock(self, lock_key: str) -> bool:
+        """基于 SQLite 主键唯一约束的分布式/多进程互斥防重锁"""
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.exc import IntegrityError
+        from app.config import settings
+        
+        db_path = settings.database_url.replace("sqlite:///", "")
+        engine = create_engine(f"sqlite:///{db_path}")
+        
         try:
-            from sqlalchemy import create_engine, text
-            from app.config import settings
-            import pytz
-            
-            db_path = settings.database_url.replace("sqlite:///", "")
-            engine = create_engine(f"sqlite:///{db_path}")
-            
-            user_tz = pytz.timezone("Asia/Shanghai")
-            now = datetime.now(user_tz)
-            start_of_day = datetime.combine(now.date(), time.min)
-            start_utc_str = user_tz.localize(start_of_day).astimezone(pytz.UTC).strftime("%Y-%m-%d %H:%M:%S")
-            
             with engine.connect() as conn:
-                # 检查 notifications 表中今天是否已有该用户的记录
-                # JSON提取category可能因数据库版本而异，这里使用 LIKE 模糊匹配作为轻量降级方案
-                result = conn.execute(
-                    text("""
-                        SELECT 1 FROM notifications 
-                        WHERE user_id = :user_id 
-                        AND created_at >= :start_of_day
-                        AND payload LIKE :category_pattern
-                        LIMIT 1
-                    """),
-                    {
-                        "user_id": user_id, 
-                        "start_of_day": start_utc_str,
-                        "category_pattern": f'%"category": "{category}"%'
-                    }
-                ).fetchone()
-                return result is not None
-        except Exception as e:
-            print(f"[DailyNotification] Error checking duplicate notification: {e}")
+                # 确保锁表存在
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS scheduler_locks (
+                        lock_key VARCHAR(255) PRIMARY KEY,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                conn.commit()
+                
+                # 抢占锁
+                conn.execute(
+                    text("INSERT INTO scheduler_locks (lock_key) VALUES (:key)"),
+                    {"key": lock_key}
+                )
+                conn.commit()
+                return True
+        except IntegrityError:
+            # 同毫秒内冲突，说明锁被其他 Worker 抢走了
             return False
+        except Exception as e:
+            error_str = str(e).lower()
+            if "unique constraint failed" in error_str or "database is locked" in error_str:
+                return False
+            print(f"[DailyNotification Lock] Error for {lock_key}: {e}")
+            return False
+        finally:
+            engine.dispose()
     
     # ==================== 早安简报 ====================
     
@@ -116,9 +118,13 @@ class DailyNotificationScheduler:
             if not settings.get("morning_briefing_enabled", True) and not force:
                 return False
                 
-            # 并发去重检查：确保今天没有发过
-            if await self._has_sent_notification_today(user_id, "MORNING_NOTIFICATION"):
-                print(f"[DailyNotification] Morning briefing already sent today for {user_id}, skipping.")
+            # 并发去重锁：同一天同一个用户只允许一次
+            import pytz
+            today_str = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y%m%d")
+            lock_key = f"daily:MORNING_NOTIFICATION:{user_id}:{today_str}"
+            
+            if not self._acquire_scheduler_lock(lock_key):
+                print(f"[DailyNotification] Locked: Morning briefing already grabbed today for {user_id}, skipping.")
                 return False
             
             # 获取今日日程
@@ -166,9 +172,12 @@ class DailyNotificationScheduler:
             if not checker.should_send_notification("afternoon_checkin", current_time=current_bj) and not force:
                 return False
                 
-            # 并发去重检查
-            if await self._has_sent_notification_today(user_id, "AFTERNOON_NOTIFICATION"):
-                print(f"[DailyNotification] Afternoon check-in already sent today for {user_id}, skipping.")
+            # 并发去重锁
+            today_str = current_bj.strftime("%Y%m%d")
+            lock_key = f"daily:AFTERNOON_NOTIFICATION:{user_id}:{today_str}"
+            
+            if not self._acquire_scheduler_lock(lock_key):
+                print(f"[DailyNotification] Locked: Afternoon check-in already grabbed today for {user_id}, skipping.")
                 return False
             
             # 获取下午日程
@@ -217,9 +226,12 @@ class DailyNotificationScheduler:
             if not checker.should_send_notification("evening_switch", current_time=current_bj) and not force:
                 return False
                 
-            # 并发去重检查
-            if await self._has_sent_notification_today(user_id, "EVENING_NOTIFICATION"):
-                print(f"[DailyNotification] Evening switch already sent today for {user_id}, skipping.")
+            # 并发去重锁
+            today_str = current_bj.strftime("%Y%m%d")
+            lock_key = f"daily:EVENING_NOTIFICATION:{user_id}:{today_str}"
+            
+            if not self._acquire_scheduler_lock(lock_key):
+                print(f"[DailyNotification] Locked: Evening switch already grabbed today for {user_id}, skipping.")
                 return False
             
             # 获取晚间日程
@@ -264,9 +276,13 @@ class DailyNotificationScheduler:
             if not settings.get("closing_ritual_enabled", True) and not force:
                 return False
                 
-            # 并发去重检查
-            if await self._has_sent_notification_today(user_id, "NIGHT_NOTIFICATION"):
-                print(f"[DailyNotification] Closing ritual already sent today for {user_id}, skipping.")
+            # 并发去重锁
+            import pytz
+            today_str = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y%m%d")
+            lock_key = f"daily:NIGHT_NOTIFICATION:{user_id}:{today_str}"
+            
+            if not self._acquire_scheduler_lock(lock_key):
+                print(f"[DailyNotification] Locked: Closing ritual already grabbed today for {user_id}, skipping.")
                 return False
             
             # 获取今日全部任务（包含完成和未完成）

@@ -202,6 +202,45 @@ class BackgroundTaskScheduler:
         except Exception as e:
             print(f"[Scheduler] Error processing pending notifications: {e}")
 
+    def _acquire_scheduler_lock(self, lock_key: str) -> bool:
+        """基于 SQLite 主键唯一约束的分布式/多进程互斥防重锁"""
+        from sqlalchemy import create_engine, text
+        from sqlalchemy.exc import IntegrityError
+        from app.config import settings
+        
+        db_path = settings.database_url.replace("sqlite:///", "")
+        engine = create_engine(f"sqlite:///{db_path}")
+        
+        try:
+            with engine.connect() as conn:
+                # 确保锁表存在 (仅在第一次有效)
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS scheduler_locks (
+                        lock_key VARCHAR(255) PRIMARY KEY,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                conn.commit()
+                
+                # 抢占锁
+                conn.execute(
+                    text("INSERT INTO scheduler_locks (lock_key) VALUES (:key)"),
+                    {"key": lock_key}
+                )
+                conn.commit()
+                return True
+        except IntegrityError:
+            # SQLite 同一毫秒内主键冲突
+            return False
+        except Exception as e:
+            error_str = str(e).lower()
+            if "unique constraint failed" in error_str or "database is locked" in error_str:
+                return False
+            print(f"[Scheduler Lock] Error for {lock_key}: {e}")
+            return False
+        finally:
+            engine.dispose()
+
     async def _check_event_reminders(self):
         """
         检查即将开始的事件并发送提醒通知
@@ -400,29 +439,14 @@ class BackgroundTaskScheduler:
                         # - 例如:设置15分钟提醒,只在 14-15 分钟时触发(调度器每分钟检查一次)
                         # - 这确保每个事件只在一个时间窗口内触发一次
                         if time_diff > 0 and (reminder_minutes - 1) < time_diff <= reminder_minutes:
-                            # 先检查是否已发送过提醒(在构建列表前就去重)
-                            # 注意: DB 中 created_at 是 UTC 格式 "YYYY-MM-DD HH:MM:SS"
-                            # 必须用相同格式的 UTC 时间做比较，否则 SQLite 字符串比较会失败
-                            today_start_local = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
-                            today_start_utc = user_tz.localize(today_start_local).astimezone(pytz.UTC)
-                            today_start_str = today_start_utc.strftime("%Y-%m-%d %H:%M:%S")
                             
-                            already_sent = conn.execute(
-                                text("""
-                                    SELECT id FROM notifications 
-                                    WHERE user_id = :user_id 
-                                    AND type = 'event_reminder'
-                                    AND payload LIKE :event_pattern
-                                    AND created_at >= :today_start
-                                """),
-                                {
-                                    "user_id": user_uuid,
-                                    "event_pattern": f'%{event_id}%',
-                                    "today_start": today_start_str
-                                }
-                            ).fetchone()
+                            # 【修改为使用基于表主键的原子锁，防止多 Worker 竞态】
+                            # 使用事件 ID + 预定发生时间的唯一组合来锁住这一次提醒
+                            event_time_str = event_start.strftime('%Y%m%d%H%M')
+                            lock_key = f"event_reminder:{event_id}:{event_time_str}"
                             
-                            if already_sent:
+                            if not self._acquire_scheduler_lock(lock_key):
+                                # 被别的 worker 抢先了，放弃
                                 continue
                                 
                             events_to_remind.append({
