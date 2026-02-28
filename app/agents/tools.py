@@ -89,11 +89,11 @@ def register_all_tools():
                 "time_period": {
                     "type": "string",
                     "enum": ["MORNING", "AFTERNOON", "NIGHT", "ANYTIME"],
-                    "description": "模糊时间段（可选，当没有具体开始时间时使用）"
+                    "description": "模糊时间段"
                 },
                 "event_date": {
                     "type": "string",
-                    "description": "事件日期，YYYY-MM-DD 或 ISO 格式（可选，配合 time_period 使用）"
+                    "description": "事件日期，YYYY-MM-DD 或 ISO 格式"
                 },
                 "duration": {
                     "type": "integer",
@@ -1148,30 +1148,43 @@ def parse_time_with_timezone(time_str: Optional[str], default_tz: str = "Asia/Sh
     """
     解析时间字符串，确保返回带时区的datetime
     
-    关键修复：AI生成的时间字符串通常不带时区信息，
-    如 "2026-02-07T10:00:00"，需要将其解释为用户本地时区时间，
-    而不是UTC时间。
-    
-    Args:
-        time_str: ISO 8601格式的时间字符串
-        default_tz: 默认时区，用于naive datetime
-    
-    Returns:
-        带时区的datetime，或None
+    支持格式:
+    - ISO 8601 (2026-02-07T10:00:00)
+    - 纯时间格式 (15:00 或 15:00:00)，将使用当天的日期
     """
     if not time_str:
         return None
     
+    user_tz = pytz.timezone(default_tz)
+    
     try:
+        # 1. 优先尝试直接解析完整的 ISO 格式
         dt = datetime.fromisoformat(time_str)
-        
-        # 如果是naive datetime（无时区），假设是用户本地时区
         if dt.tzinfo is None:
-            user_tz = pytz.timezone(default_tz)
             dt = user_tz.localize(dt)
-        
         return dt
     except Exception as e:
+        # 2. 如果失败，并且看起来像纯时间格式 "HH:MM" 或 "HH:MM:SS"
+        if len(time_str) <= 8 and ":" in time_str:
+            try:
+                # 尝试解析纯时间格式
+                if len(time_str.split(':')) == 2:
+                    time_dt = datetime.strptime(time_str, "%H:%M").time()
+                else:
+                    time_dt = datetime.strptime(time_str, "%H:%M:%S").time()
+                
+                # 結合当前的本地日期
+                now_local = datetime.now(user_tz)
+                combined_dt = now_local.replace(
+                    hour=time_dt.hour,
+                    minute=time_dt.minute,
+                    second=time_dt.second,
+                    microsecond=0
+                )
+                return combined_dt
+            except Exception as time_e:
+                print(f"[parse_time_with_timezone] Error parsing time strict '{time_str}': {time_e}")
+                
         print(f"[parse_time_with_timezone] Error parsing '{time_str}': {e}")
         return None
 
