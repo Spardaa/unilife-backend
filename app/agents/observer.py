@@ -55,7 +55,7 @@ class ObserverAgent(BaseAgent):
                 user_id=user_id,
                 conversation_id="",
                 hours=24,
-                max_messages=30
+                max_messages=200
             )
         except Exception:
             context_messages = []
@@ -194,14 +194,14 @@ class ObserverAgent(BaseAgent):
 
         if messages:
             parts.append("### 对话摘要")
-            for msg in messages[-15:]:
+            for msg in messages:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 if role == "user":
-                    short = content[:80] + "..." if len(content) > 80 else content
+                    short = content[:200] + "..." if len(content) > 200 else content
                     parts.append(f"用户: {short}")
                 elif role == "assistant":
-                    short = content[:60] + "..." if len(content) > 60 else content
+                    short = content[:150] + "..." if len(content) > 150 else content
                     parts.append(f"我: {short}")
 
         if events:

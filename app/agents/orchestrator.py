@@ -16,7 +16,6 @@ from app.agents.base import (
     Intent
 )
 from app.agents.observer import observer_agent
-from app.agents.observer_tracker import observer_trigger_tracker
 from app.services.profile_service import profile_service
 from app.services.conversation_service import conversation_service
 
@@ -32,8 +31,6 @@ class AgentOrchestrator:
     def __init__(self):
         # 共用的 Agents
         self.observer = observer_agent
-        self.observer_tracker = observer_trigger_tracker
-        self._background_task: Optional[asyncio.Task] = None
         
         # 1+1 模式的 UnifiedAgent 和 ContextFilterAgent
         self._unified_agent = None
@@ -215,38 +212,6 @@ class AgentOrchestrator:
         # 记录最终回复
         conv_logger.log_reply(unified_response.content)
         
-        # 3. 添加到 Observer 追踪器（与 3+1 模式相同）
-        logger.debug("Adding conversation to Observer tracker...")
-        
-        full_context = await conversation_service.get_recent_context(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            hours=72,
-            max_messages=100
-        )
-        
-        trigger_info = self.observer_tracker.add_message(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            conversation_context=full_context
-        )
-        
-        if trigger_info:
-            logger.info(f"Observer threshold triggered: {trigger_info['trigger_type']}, messages: {trigger_info['message_count']}")
-            asyncio.create_task(
-                self.observer.analyze_conversation_batch(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    full_context=trigger_info['full_context']
-                )
-            )
-        
-        # 启动后台任务检查延迟触发
-        if self._background_task is None or self._background_task.done():
-            self._background_task = asyncio.create_task(
-                self._observer_background_loop()
-            )
-        
         # 记录对话结束
         conv_logger.log_end()
         
@@ -376,57 +341,6 @@ class AgentOrchestrator:
             period_end=end_date,
             job_type=job_type
         )
-
-    async def _observer_background_loop(self):
-        """
-        Observer 后台循环，定期检查延迟触发
-
-        每 5 分钟检查一次是否有超过 30 分钟无新消息的对话
-        """
-        import logging
-        bg_logger = logging.getLogger("observer.background")
-
-        while True:
-            try:
-                # 等待 5 分钟
-                await asyncio.sleep(300)
-
-                # 检查延迟触发
-                triggered = self.observer_tracker.check_delayed_triggers()
-
-                if triggered:
-                    bg_logger.info(f"Observer delayed trigger: {len(triggered)} conversations")
-
-                    for trigger_info in triggered:
-                        try:
-                            await self.observer.analyze_conversation_batch(
-                                conversation_id=trigger_info['conversation_id'],
-                                user_id=trigger_info['user_id'],
-                                full_context=trigger_info['full_context']
-                            )
-                            bg_logger.info(f"Observer analyzed: {trigger_info['conversation_id']}, trigger: {trigger_info['trigger_type']}")
-                        except Exception as e:
-                            bg_logger.error(f"Observer analysis failed for {trigger_info['conversation_id']}: {e}")
-
-            except asyncio.CancelledError:
-                bg_logger.info("Observer background loop cancelled")
-                break
-            except Exception as e:
-                bg_logger.error(f"Observer background loop error: {e}")
-
-    def get_observer_tracker_status(self) -> Dict[str, Any]:
-        """
-        获取 Observer 追踪器状态（用于监控）
-
-        Returns:
-            追踪器状态信息
-        """
-        pending = self.observer_tracker.get_pending_info()
-
-        return {
-            "pending_count": len(pending),
-            "pending_conversations": pending[:10]  # 最多返回 10 个
-        }
 
     def health_check(self) -> Dict[str, Any]:
         """
