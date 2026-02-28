@@ -49,43 +49,6 @@ class SoulService:
         logger.info(f"Soul updated for user {user_id} ({len(new_content)} chars)")
         return new_content
 
-    def update_user_perception(self, user_id: str, perception: str, pattern_notes: list = None) -> None:
-        """
-        更新 soul.md 中 '## UniLife 眼中的用户' 区块。
-        
-        由 Observer 每日调用，用自然语言描述对用户的认识。
-        该区块会被替换（而非追加），保持简洁。
-
-        Args:
-            user_id: 用户 ID
-            perception: 自然语言描述 ("他最近压力大，但还是坚持运动...")
-            pattern_notes: 行为模式列表 (["低估写作时长", "下午效率最高"])
-        """
-        import re
-        current = self.get_soul(user_id)
-
-        # 构建新的用户认知区块
-        today = __import__("datetime").date.today().strftime("%Y-%m-%d")
-        patterns_str = ""
-        if pattern_notes:
-            patterns_str = "\n" + "\n".join(f"- {p}" for p in pattern_notes)
-
-        new_block = f"## UniLife 眼中的用户\n\n_（最后更新：{today}）_\n\n{perception}{patterns_str}"
-
-        # 替换或追加
-        if "## UniLife 眼中的用户" in current:
-            new_content = re.sub(
-                r"## UniLife 眼中的用户.*?(?=\n## |\Z)",
-                new_block + "\n\n",
-                current,
-                flags=re.DOTALL
-            )
-        else:
-            new_content = current.rstrip() + f"\n\n{new_block}\n"
-
-        user_data_service.write_file(user_id, SOUL_FILENAME, new_content)
-        logger.info(f"User perception updated for {user_id}")
-
     def _initialize(self, user_id: str) -> str:
         """首次初始化 soul.md"""
         user_data_service.write_file(user_id, SOUL_FILENAME, _INITIAL_SOUL)

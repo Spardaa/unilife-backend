@@ -509,6 +509,42 @@ class ConversationService:
         finally:
             db.close()
 
+    def get_user_message_dates(
+        self,
+        user_id: str,
+        timezone_str: str = "Asia/Shanghai"
+    ) -> List[str]:
+        """
+        获取用户有聊天记录的所有日期（格式：YYYY-MM-DD，本地时间）
+
+        Args:
+            user_id: 用户ID
+            timezone_str: 用户时区
+
+        Returns:
+            日期字符串列表
+        """
+        db = self.get_session()
+        try:
+            # 获取用户所有的消息创建时间
+            messages = db.query(Message.created_at).join(
+                Conversation, Message.conversation_id == Conversation.id
+            ).filter(
+                Conversation.user_id == user_id
+            ).all()
+
+            dates = set()
+            for (created_at,) in messages:
+                if created_at:
+                    local_time = _get_user_local_time(created_at, timezone_str)
+                    dates.add(local_time.strftime("%Y-%m-%d"))
+            
+            # 按日期降序排列
+            result = list(dates)
+            result.sort(reverse=True)
+            return result
+        finally:
+            db.close()
 
 # 全局对话服务实例
 conversation_service = ConversationService()

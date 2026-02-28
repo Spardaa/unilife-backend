@@ -29,48 +29,46 @@ def json_response(data: dict, status_code: int = 200) -> dict:
     }
 
 
-def daily_profile_analyzer(event, context):
+def daily_observer_review(event, context):
     """
-    每日偏好分析任务
+    每日观察者复盘任务
 
     触发时间：每日凌晨 3:00
     Cron 表达式：0 0 3 * * * *
 
-    功能：分析有对话记录的用户，更新偏好设置
+    功能：分析有对话记录的用户，写日记并可能更新认知
     """
     import asyncio
-
-    print(f"[Cron] Daily profile analysis started at {datetime.now()}")
-
+    
+    print(f"[Cron] Daily observer review started at {datetime.now()}")
+    
     try:
-        target_date = date.today() - 1
+        from datetime import timedelta
+        target_date = date.today() - timedelta(days=1)
         user_ids = task_scheduler._get_active_users_for_date(target_date)
 
         print(f"[Cron] Found {len(user_ids)} users with conversations on {target_date}")
 
-        analyzed_count = 0
+        reviewed_count = 0
         failed_count = 0
 
         for user_id in user_ids:
             try:
-                # 触发 Observer 分析（简化版只更新偏好）
-                conversations = task_scheduler._get_user_conversations(user_id, target_date)
-                for conv_id in conversations[:5]:  # 最多分析5个对话
-                    asyncio.run(observer_agent.analyze_conversation_batch(
-                        conversation_id=conv_id,
-                        user_id=user_id
-                    ))
-                analyzed_count += 1
-
+                # 触发统一的 Observer 复盘
+                asyncio.run(observer_agent.daily_review(
+                    user_id=user_id,
+                    date_str=target_date.strftime("%Y-%m-%d")
+                ))
+                reviewed_count += 1
             except Exception as e:
                 failed_count += 1
-                print(f"[Cron] Error analyzing user {user_id}: {e}")
+                print(f"[Cron] Error reviewing user {user_id}: {e}")
 
         summary = {
-            "task": "daily_profile_analysis",
-            "target_date": target_date.isoformat(),
+            "task": "daily_observer_review",
+            "target_date": target_date.strftime("%Y-%m-%d"),
             "total_users": len(user_ids),
-            "analyzed": analyzed_count,
+            "reviewed": reviewed_count,
             "failed": failed_count,
             "timestamp": datetime.now().isoformat()
         }
@@ -79,19 +77,48 @@ def daily_profile_analyzer(event, context):
         return json_response(summary)
 
     except Exception as e:
-        print(f"[Cron] Error in daily profile analysis: {e}")
+        print(f"[Cron] Error in daily observer review: {e}")
         return json_response({
-            "task": "daily_profile_analysis",
+            "task": "daily_observer_review",
             "status": "error",
             "error": str(e),
             "timestamp": datetime.now().isoformat()
         }, status_code=500)
 
 
-# 保留旧函数名作为别名，保证兼容性
-daily_diary_generator = daily_profile_analyzer
-weekly_profile_analyzer = daily_profile_analyzer
+def weekly_profile_analyzer(event, context):
+    """每周记忆精炼任务"""
+    import asyncio
+    print(f"[Cron] Weekly memory consolidation started at {datetime.now()}")
+    try:
+        user_ids = task_scheduler._get_all_active_users()
+        consolidated = 0
+        failed = 0
+        for user_id in user_ids:
+            try:
+                asyncio.run(observer_agent.consolidate_memory(user_id))
+                consolidated += 1
+            except Exception as e:
+                failed += 1
+                print(f"[Cron] Error consolidating memory for user {user_id}: {e}")
 
+        summary = {
+            "task": "weekly_memory_consolidation",
+            "total_users": len(user_ids),
+            "consolidated": consolidated,
+            "failed": failed,
+            "timestamp": datetime.now().isoformat()
+        }
+        print(f"[Cron] {summary}")
+        return json_response(summary)
+    except Exception as e:
+        print(f"[Cron] Error in weekly memory consolidation: {e}")
+        return json_response({
+            "task": "weekly_memory_consolidation",
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, status_code=500)
 
 # ==================== 本地测试入口 ====================
 

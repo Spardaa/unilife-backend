@@ -420,3 +420,27 @@ async def get_message_history(
         )
         for m in messages
     ]
+
+@router.get("/messages/history/dates", response_model=List[str])
+async def get_message_history_dates(
+    user_id: str
+):
+    """
+    获取用户包含聊天记录的所有日期列表
+    格式: ["YYYY-MM-DD", ...]
+    """
+    try:
+        from app.services.db import db_service
+        user = await db_service.get_user(user_id)
+        user_timezone = user.get("timezone", "Asia/Shanghai") if user else "Asia/Shanghai"
+        
+        dates = conversation_service.get_user_message_dates(
+            user_id=user_id,
+            timezone_str=user_timezone
+        )
+        return dates
+    except Exception as e:
+        print(f"[Chat API] Error getting message dates: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

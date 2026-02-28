@@ -686,7 +686,7 @@ class DatabaseService:
                 tz = self._get_user_tz(session, event.user_id)
             return event.to_dict(tz=tz) if event else None
 
-    async def get_recurring_templates(self, user_id: str) -> List[Dict[str, Any]]:
+    async def get_recurring_templates(self, user_id: str, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Get all recurring event templates for a user.
 
@@ -695,16 +695,29 @@ class DatabaseService:
 
         Args:
             user_id: The user ID to get templates for
+            filters: Optional dictionary of field=value pairs to filter by
 
         Returns:
             List of template event dictionaries
         """
         self._ensure_initialized()
         with self.get_session() as session:
-            events = session.query(EventModel).filter(
+            query = session.query(EventModel).filter(
                 EventModel.user_id == user_id,
                 EventModel.is_template == True
-            ).all()
+            )
+            
+            # Apply additional filters if provided
+            if filters:
+                for key, value in filters.items():
+                    # Status is handled differently for templates usually, but we apply other filters
+                    # We might not want to filter templates by status=PENDING/COMPLETED 
+                    # as templates themselves don't really complete in the same way,
+                    # but we definitely want to filter by project_id, category, etc.
+                    if hasattr(EventModel, key) and key not in ["status", "time_period"]:
+                        query = query.filter(getattr(EventModel, key) == value)
+            
+            events = query.all()
             tz = self._get_user_tz(session, user_id)
             return [event.to_dict(tz=tz) for event in events]
 

@@ -29,6 +29,10 @@ MEMORY_FILENAME = "memory.md"
 
 _INITIAL_MEMORY = """# UniLife Memory
 
+## UniLife 眼中的用户
+
+_（暂无记录）_
+
 ## Weekly Summary
 
 
@@ -119,6 +123,48 @@ class MemoryService:
         top = [e for _, e in scored[:3] if _ > 0] or [scored[0][1]]
 
         return "\n\n".join(top)
+
+    def update_user_perception(self, user_id: str, perception: str, pattern_notes: list = None) -> None:
+        """
+        更新 memory.md 中 '## UniLife 眼中的用户' 区块。
+        
+        由 Observer 每日调用，用自然语言描述对用户的认识。
+        该区块会被替换（而非追加），保持简洁。
+
+        Args:
+            user_id: 用户 ID
+            perception: 自然语言描述 ("他最近压力大，但还是坚持运动...")
+            pattern_notes: 行为模式列表 (["低估写作时长", "下午效率最高"])
+        """
+        import re
+        full = self.get_memory(user_id)
+
+        # 构建新的用户认知区块
+        today = __import__("datetime").date.today().strftime("%Y-%m-%d")
+        patterns_str = ""
+        if pattern_notes:
+            patterns_str = "\n" + "\n".join(f"- {p}" for p in pattern_notes)
+
+        new_block = f"## UniLife 眼中的用户\n\n_（最后更新：{today}）_\n\n{perception}{patterns_str}\n"
+
+        # 替换或追加
+        if "## UniLife 眼中的用户" in full:
+            new_full = re.sub(
+                r"## UniLife 眼中的用户.*?(?=\n## |\Z)",
+                new_block + "\n",
+                full,
+                flags=re.DOTALL
+            )
+        else:
+            # 插入到最前面
+            new_full = re.sub(
+                r"(# UniLife Memory\s*)",
+                f"\\1\n{new_block}\n",
+                full
+            )
+
+        user_data_service.write_file(user_id, MEMORY_FILENAME, new_full)
+        logger.info(f"User perception updated for {user_id}")
 
     # ---- 写入 ----
 

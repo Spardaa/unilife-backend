@@ -32,15 +32,14 @@ class BackgroundTaskScheduler:
 
         self.scheduler = AsyncIOScheduler()
 
-        # 每日凌晨 3:00 分析用户偏好
+        # 每日凌晨 3:00 观察者统一复盘 (写日记 + 更新认知)
         self.scheduler.add_job(
-            self._analyze_daily_preferences,
+            self._daily_review,
             trigger=CronTrigger(hour=3, minute=0, timezone="Asia/Shanghai"),
-            id="analyze_daily_preferences",
-            name="Analyze Daily User Preferences",
+            id="daily_observer_review",
+            name="Daily Observer Review",
             replace_existing=True
         )
-        
         # 每分钟检查并发送用户个性化通知
         self.scheduler.add_job(
             self._check_and_send_notifications,
@@ -68,15 +67,6 @@ class BackgroundTaskScheduler:
             replace_existing=True
         )
         
-        # 每日凌晨 2:30 写日记 + 分析
-        self.scheduler.add_job(
-            self._write_daily_diaries,
-            trigger=CronTrigger(hour=2, minute=30, timezone="Asia/Shanghai"),
-            id="write_daily_diaries",
-            name="Write Daily Diaries",
-            replace_existing=True
-        )
-        
         # 每周日凌晨 4:00 精炼旧记忆
         self.scheduler.add_job(
             self._consolidate_memories,
@@ -99,57 +89,34 @@ class BackgroundTaskScheduler:
             self.scheduler.shutdown(wait=False)
             print("[Scheduler] Scheduler stopped")
 
-    async def _analyze_daily_preferences(self):
-        """每日偏好分析任务"""
-        print(f"[Scheduler] Running daily preference analysis at {datetime.now()}")
+    async def _daily_review(self):
+        """每日观察者复盘任务"""
+        print(f"[Scheduler] Running daily observer review at {datetime.now()}")
 
         try:
             target_date = date.today() - timedelta(days=1)
             user_ids = self._get_active_users_for_date(target_date)
 
-            analyzed_count = 0
+            reviewed_count = 0
             failed_count = 0
 
             for user_id in user_ids:
                 try:
-                    conversations = self._get_user_conversations(user_id, target_date)
-                    for conv_id in conversations[:5]:
-                        await observer_agent.analyze_conversation_batch(
-                            conversation_id=conv_id,
-                            user_id=user_id
-                        )
-                    analyzed_count += 1
-                    print(f"[Scheduler] Analyzed preferences for user {user_id}")
-
+                    await observer_agent.daily_review(
+                        user_id=user_id,
+                        date_str=target_date.strftime("%Y-%m-%d")
+                    )
+                    reviewed_count += 1
+                    print(f"[Scheduler] Daily review completed for user {user_id}")
                 except Exception as e:
                     failed_count += 1
-                    print(f"[Scheduler] Error analyzing user {user_id}: {e}")
+                    print(f"[Scheduler] Error reviewing user {user_id}: {e}")
 
-            print(f"[Scheduler] Daily preference analysis completed: "
-                  f"{analyzed_count} analyzed, {failed_count} failed")
+            print(f"[Scheduler] Daily review finished: "
+                  f"{reviewed_count} success, {failed_count} failed")
 
         except Exception as e:
-            print(f"[Scheduler] Error in daily preference analysis task: {e}")
-
-    async def _write_daily_diaries(self):
-        """每日日记撰写任务"""
-        print(f"[Scheduler] Running daily diary writing at {datetime.now()}")
-        try:
-            yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-            user_ids = self._get_active_users_for_date(date.today() - timedelta(days=1))
-
-            written = 0
-            for user_id in user_ids:
-                try:
-                    result = await observer_agent.write_daily_diary(user_id, yesterday)
-                    if result:
-                        written += 1
-                except Exception as e:
-                    print(f"[Scheduler] Error writing diary for {user_id}: {e}")
-
-            print(f"[Scheduler] Daily diaries written: {written}/{len(user_ids)}")
-        except Exception as e:
-            print(f"[Scheduler] Error in diary writing task: {e}")
+            print(f"[Scheduler] Error in daily review task: {e}")
 
     async def _consolidate_memories(self):
         """每周记忆精炼任务"""

@@ -115,8 +115,8 @@ async def get_events(
     # Expand virtual instances if requested
     virtual_instances = []
     if expand_virtual:
-        # Get all templates
-        templates = await db_service.get_recurring_templates(user_id)
+        # Get all templates that match filters (like project_id)
+        templates = await db_service.get_recurring_templates(user_id, filters=filters)
 
         # Expand within date range
         virtual_dicts = virtual_expansion_service.expand_templates(
@@ -138,7 +138,7 @@ async def get_events(
     # For backward compatibility, include templates only if explicitly requested
     templates_response = []
     if include_templates:
-        template_events = await db_service.get_recurring_templates(user_id)
+        template_events = await db_service.get_recurring_templates(user_id, filters=filters)
         for event in template_events:
             try:
                 templates_response.append(EventResponse(**event))
