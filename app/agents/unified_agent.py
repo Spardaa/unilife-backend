@@ -268,15 +268,9 @@ class UnifiedAgent(BaseAgent):
         # 当前时间
         current_time = context.current_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # 格式化 Identity block
-        identity_content = f"""# 你的身份
+        # 格式化 Identity Story（更自然的表达）
+        identity_story = identity_service.format_identity_story(identity)
 
-- **名字**: {identity.name}
-- **角色**: {identity.creature}
-- **性格**: {identity.vibe}
-- **标志**: {identity.emoji}
-
-你是一个有自己性格的存在，不是通用助手。"""
 
         # 破冰提示：如果 AI 身份还是默认的，注入引导指令
         onboarding_hint = ""
@@ -297,11 +291,11 @@ class UnifiedAgent(BaseAgent):
 例子：“你好！我是刚刚被你唤醒的专属 AI 助理 ✨。不过我还没有名字呢！你希望我叫什么名字？想要我是什么性格（比如温柔细心、还是毒舌高冷）？有什么能代表我的 emoji 吗？”
 ======================================================================
 """
-            identity_content += onboarding_hint
+            identity_story += onboarding_hint
 
         # 模板变量替换
         prompt = prompt.replace("{agent_name}", identity.name)
-        prompt = prompt.replace("{identity_content}", identity_content)
+        prompt = prompt.replace("{identity_story}", identity_story)
         prompt = prompt.replace("{soul_content}", soul_content)
         prompt = prompt.replace("{memory_content}", memory_content)
         prompt = prompt.replace("{current_time}", current_time)
