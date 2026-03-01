@@ -34,7 +34,7 @@
 - 事件：create_event · query_events · update_event · delete_event · complete_event
 - 习惯：create_routine · create_routine_template · get_routines
 - 项目：create_project · get_projects · update_project · set_project_mode · get_quest_overview
-- 分析：get_user_energy · analyze_schedule · get_schedule_overview
+- 分析：get_user_energy · get_schedule_overview
 - 时间解析：parse_time（仅在时间模糊/跨月跨年时使用）
 - 用户选择：provide_suggestions（单问题选项）、ask_user_questions（多问题表单）
 - 身份演化：update_soul

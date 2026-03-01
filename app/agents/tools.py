@@ -6,7 +6,6 @@ from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timedelta
 from app.services.db import db_service
 from app.models.event import EventType, Category, EventStatus, EnergyLevel
-from app.agents.duration_estimator import duration_estimator_agent
 
 
 class ToolRegistry:
@@ -870,62 +869,7 @@ def register_all_tools():
         func=tool_get_routine_instance_detail
     )
 
-    # ============ Enhanced Features Tools ============
 
-    # 25. 评估精力消耗工具
-    tool_registry.register(
-        name="evaluate_energy_consumption",
-        description="评估事件的精力消耗（体力+精神两个维度）。返回结构化评估结果，包括level（低/中/高）、score（0-10分）、description（自然语言描述）和factors（具体因素）。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "event_title": {
-                    "type": "string",
-                    "description": "事件标题"
-                },
-                "event_description": {
-                    "type": "string",
-                    "description": "事件描述（可选）"
-                },
-                "event_duration": {
-                    "type": "string",
-                    "description": "时长（可选）"
-                },
-                "event_location": {
-                    "type": "string",
-                    "description": "地点（可选）"
-                },
-                "user_profile": {
-                    "type": "object",
-                    "description": "用户画像信息（可选）"
-                }
-            },
-            "required": ["event_title"]
-        },
-        func=tool_evaluate_energy_consumption
-    )
-
-    # 26. 分析日程合理性工具
-    tool_registry.register(
-        name="analyze_schedule",
-        description="分析日程安排的合理性，检测连续高强度体力/精神消耗，提供优化建议。输入事件列表（需包含energy_consumption），返回分析结果和建议。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "events": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "description": "事件列表（每个事件需包含 energy_consumption 信息）"
-                },
-                "user_context": {
-                    "type": "object",
-                    "description": "用户上下文（可选）"
-                }
-            },
-            "required": ["events"]
-        },
-        func=tool_analyze_schedule
-    )
 
     # ============ Project Management Tools (Life Project System) ============
 
@@ -1271,56 +1215,14 @@ async def tool_create_event(
             except:
                 pass
 
-    # 时长估计逻辑（用于显示和学习，不持久化到数据库）
-    duration_source = "user_exact"  # 内部追踪，不保存到数据库
-    duration_confidence = 1.0
-
-    # 如果用户没有提供时长和结束时间，AI估计
-    if duration is None and end_dt is None and start_dt:
-        # 获取用户最近的事件用于学习
-        recent_events = await db_service.get_events(user_id, limit=10)
-
-        # AI估计时长
-        estimate = await duration_estimator_agent.estimate(
-            event_title=title,
-            event_description=description,
-            user_id=user_id,
-            recent_events=recent_events
-        )
-
-        duration = estimate.duration
-        duration_source = estimate.source
-        duration_confidence = estimate.confidence
-
-        # 计算结束时间
-        end_dt = start_dt + timedelta(minutes=duration)
-
-    # 如果 provided event_date + time_period but NO start_time, duration might still be estimated
-    elif duration is None and time_period and event_dt_val:
-         # AI 估计时长
-        recent_events = await db_service.get_events(user_id, limit=10)
-        estimate = await duration_estimator_agent.estimate(
-            event_title=title,
-            event_description=description,
-            user_id=user_id,
-            recent_events=recent_events
-        )
-        duration = estimate.duration
-        duration_source = estimate.source
-        duration_confidence = estimate.confidence
-
-
+    # 时长逻辑：根据用户提供的信息计算
     # 如果提供了结束时间但没提供时长，计算时长
-    elif duration is None and end_dt and start_dt:
+    if duration is None and end_dt and start_dt:
         duration = int((end_dt - start_dt).total_seconds() / 60)
-        duration_source = "user_exact"
-        duration_confidence = 1.0
 
     # 如果提供了时长但没提供结束时间，计算结束时间
     elif duration and end_dt is None and start_dt:
         end_dt = start_dt + timedelta(minutes=duration)
-        duration_source = "user_exact"
-        duration_confidence = 1.0
 
     # 构建事件数据（只包含数据库支持的字段）
     event_data = {
@@ -1333,10 +1235,6 @@ async def tool_create_event(
         "time_period": time_period,
         "event_date": event_dt_val,
         "duration": duration,
-        # 以下字段会被db.py过滤掉，但保留用于AI决策和显示
-        # "duration_source": duration_source,
-        # "duration_confidence": duration_confidence,
-        # "display_mode": "flexible",
         "energy_required": energy_required,
         # AI决策字段（agent内部使用）
         "urgency": urgency,
@@ -1358,7 +1256,7 @@ async def tool_create_event(
 
     created_event = await db_service.create_event(event_data)
 
-    # 返回消息，根据时长来源显示不同信息
+    # 返回消息
     message = f"已创建事件：{title}"
     if time_period and not start_dt:
         period_map = {
@@ -1366,12 +1264,7 @@ async def tool_create_event(
         }
         period_str = period_map.get(time_period, time_period)
         message += f"（{period_str}）"
-    
-    if duration_source == "ai_estimate" and duration_confidence < 0.7:
-        message += f"（时长约{duration}分钟，AI估计）"
-    elif duration_source == "ai_estimate":
-        message += f"（约{duration}分钟）"
-    elif duration and start_dt: # only show duration if it's not a fuzzy time event or if it has explicit duration
+    elif duration and start_dt:
         message += f"（{duration}分钟）"
 
     return {
@@ -1706,18 +1599,6 @@ async def tool_complete_event(user_id: str, event_id: str, actual_duration: Opti
         "duration_actual": actual_duration
     }
 
-    # 如果是AI估计的，进行学习
-    if event.get("duration_source") == "ai_estimate":
-        estimated_duration = event.get("duration", 0)
-        if estimated_duration > 0:
-            # 调用学习
-            await duration_estimator_agent.learn_from_completion(
-                event_id=event_id,
-                event_title=event.get("title", ""),
-                estimated_duration=estimated_duration,
-                actual_duration=actual_duration,
-                user_id=user_id
-            )
 
     # 更新事件
     updated = await db_service.update_event(event_id, user_id, update_data)
@@ -2406,99 +2287,7 @@ async def tool_get_routine_instance_detail(instance_id: str) -> Dict[str, Any]:
     }
 
 
-# ============ Enhanced Features Tools Implementation ============
 
-async def tool_evaluate_energy_consumption(
-    event_title: str,
-    event_description: Optional[str] = None,
-    event_duration: Optional[str] = None,
-    event_location: Optional[str] = None,
-    user_profile: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    评估事件的精力消耗（体力 + 精神）
-
-    用于分析事件在不同维度的精力消耗程度，帮助合理安排日程。
-
-    Args:
-        event_title: 事件标题
-        event_description: 事件描述
-        event_duration: 时长
-        event_location: 地点
-        user_profile: 用户画像（可选）
-
-    Returns:
-        精力消耗评估结果
-    """
-    from app.agents.energy_evaluator import energy_evaluator_agent
-
-    event_data = {
-        "title": event_title,
-        "description": event_description,
-        "duration": event_duration,
-        "location": event_location
-    }
-
-    context = {}
-    if user_profile:
-        context["user_profile"] = user_profile
-
-    try:
-        evaluation = await energy_evaluator_agent.evaluate(event_data, context)
-
-        return {
-            "success": True,
-            "evaluation": evaluation.model_dump(),
-            "message": f"[ENERGY] 精力评估完成：体力 {evaluation.physical.level}({evaluation.physical.score}分)，精神 {evaluation.mental.level}({evaluation.mental.score}分)"
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "message": f"[ENERGY] 评估失败：{str(e)}"
-        }
-
-
-async def tool_analyze_schedule(
-    events: List[Dict[str, Any]],
-    user_context: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """
-    分析日程安排的合理性
-
-    检测连续高强度体力/精神消耗，提供优化建议。
-
-    Args:
-        events: 事件列表（每个事件需包含 energy_consumption）
-        user_context: 用户上下文（可选）
-
-    Returns:
-        分析结果和建议
-    """
-    from app.agents.smart_scheduler import smart_scheduler_agent
-
-    try:
-        # 先用快速检查
-        quick_result = await smart_scheduler_agent.quick_check(events)
-
-        # 如果有问题或有用户上下文，调用深度分析
-        if quick_result.get("has_issues") or user_context:
-            analysis = await smart_scheduler_agent.analyze_schedule(events, user_context)
-
-            return {
-                "success": True,
-                "analysis": analysis,
-                "message": analysis.get("message", "日程分析完成")
-            }
-        else:
-            return quick_result
-
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "message": f"[SCHEDULER] 分析失败：{str(e)}"
-        }
 
 
 # ============ Project Management Tool Implementations ============

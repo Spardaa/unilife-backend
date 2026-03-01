@@ -126,8 +126,8 @@ class ContextFilterAgent(BaseAgent):
         # 构建简化的消息列表（只需要最近几条历史用于判断）
         system_prompt = self._get_system_prompt()
         
-        # 只传入最近 10 条历史供 LLM 判断
-        recent_history = context.conversation_history[-10:] if len(context.conversation_history) > 10 else context.conversation_history
+        # 只传入最近 20 条历史供 LLM 判断
+        recent_history = context.conversation_history[-20:] if len(context.conversation_history) > 20 else context.conversation_history
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -159,7 +159,7 @@ class ContextFilterAgent(BaseAgent):
                         "properties": {
                             "related_context_count": {
                                 "type": "integer",
-                                "description": "需要保留的历史消息条数 (0-15)"
+                                "description": "需要保留的历史消息条数 (0-20)"
                             },
                             "inject_memory": {
                                 "type": "boolean",
@@ -194,7 +194,7 @@ class ContextFilterAgent(BaseAgent):
         if tool_calls and len(tool_calls) > 0:
             function_args = json.loads(tool_calls[0]["function"]["arguments"])
             count = function_args.get("related_context_count", 3)
-            count = max(0, min(count, 15))  # 限制范围
+            count = max(0, min(count, 20))  # 限制范围
             should_inject_memory = function_args.get("inject_memory", False)
             memory_query = function_args.get("memory_query", "")
             
@@ -209,15 +209,47 @@ class ContextFilterAgent(BaseAgent):
     def _summarize_history(self, history: List[Dict[str, Any]]) -> str:
         """
         生成历史消息摘要（减少 token 消耗）
+        按角色分类处理，保留关键信息：
+        - assistant: 提取工具调用名称
+        - tool: 提取 success/message 摘要
+        - user: 保留前 100 字符
         """
         lines = []
         for i, msg in enumerate(history):
             role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            # 截断过长的消息
-            if len(content) > 50:
-                content = content[:50] + "..."
-            lines.append(f"{i+1}. [{role}] {content}")
+            content = msg.get("content", "") or ""
+
+            if role == "assistant":
+                tool_calls = msg.get("tool_calls", [])
+                if tool_calls:
+                    tool_names = [tc.get("function", {}).get("name", "?") for tc in tool_calls]
+                    tool_info = f"[调用工具: {', '.join(tool_names)}]"
+                    if content:
+                        summary = content[:80] + ("..." if len(content) > 80 else "")
+                        lines.append(f"{i+1}. [assistant] {tool_info} {summary}")
+                    else:
+                        lines.append(f"{i+1}. [assistant] {tool_info}")
+                else:
+                    summary = content[:80] + ("..." if len(content) > 80 else "")
+                    lines.append(f"{i+1}. [assistant] {summary}")
+
+            elif role == "tool":
+                try:
+                    result = json.loads(content)
+                    success = result.get("success", "?")
+                    message = result.get("message", "")
+                    if message:
+                        lines.append(f"{i+1}. [tool] success={success}, {message[:60]}")
+                    else:
+                        lines.append(f"{i+1}. [tool] success={success}")
+                except (json.JSONDecodeError, TypeError):
+                    summary = content[:80] + ("..." if len(content) > 80 else "")
+                    lines.append(f"{i+1}. [tool] {summary}")
+
+            else:  # user, system, etc.
+                summary = content[:100] + ("..." if len(content) > 100 else "")
+                lines.append(f"{i+1}. [{role}] {summary}")
+
         return "\n".join(lines)
     
     def _slice_context(self, history: List[Dict[str, Any]], count: int) -> List[Dict[str, Any]]:
@@ -266,13 +298,14 @@ class ContextFilterAgent(BaseAgent):
             return prompt_service.load_prompt("agents/context_filter")
         except:
             return """你是一个轻量级的上下文筛选器。
-判断当前用户消息需要保留多少条历史上下文（0-10条）。
+判断当前用户消息需要保留多少条历史上下文（0-20条）。
 
 规则：
 - 独立新请求（信息完整）→ 0-1 条
 - 简单延续对话 → 2-3 条  
 - 回答问题/补充信息 → 4-5 条
 - 引用/修改之前内容 → 6-10 条
+- 深度/复杂多步操作 → 10-20 条
 
 调用 filter_context 工具返回结果。"""
 
