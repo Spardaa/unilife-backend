@@ -134,6 +134,10 @@ class User(BaseModel):
     # Preferences
     preferences: UserPreferences = Field(default_factory=UserPreferences, description="User preferences")
 
+    # AI request limits
+    daily_ai_request_count: int = Field(default=0, description="Number of AI requests made today")
+    last_ai_request_date: Optional[str] = Field(None, description="Date of the last AI request")
+
     # Metadata
     created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation timestamp")
     last_active_at: datetime = Field(default_factory=datetime.utcnow, description="Last activity timestamp")
@@ -156,6 +160,8 @@ class User(BaseModel):
                     "notification_enabled": True,
                     "auto_schedule_enabled": True
                 },
+                "daily_ai_request_count": 0,
+                "last_ai_request_date": None,
                 "created_at": "2026-01-01T00:00:00",
                 "last_active_at": "2026-01-20T10:00:00"
             }

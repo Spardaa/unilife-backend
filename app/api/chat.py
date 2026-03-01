@@ -15,6 +15,9 @@ from app.agents.orchestrator import agent_orchestrator
 from app.services.snapshot import snapshot_manager
 from app.services.conversation_service import conversation_service
 
+# Hardcoded daily limit for AI requests
+MAX_DAILY_AI_REQUESTS = 50
+
 router = APIRouter()
 
 
@@ -52,6 +55,38 @@ async def chat(request: ChatRequest):
         conversation_id = conversation.id
 
     try:
+        from app.services.db import db_service
+        # Check daily AI request limit
+        is_allowed = await db_service.check_and_increment_ai_request(
+            user_id=request.user_id,
+            limit=MAX_DAILY_AI_REQUESTS
+        )
+        
+        if not is_allowed:
+            # Create a limit reached message
+            reply = f"抱歉，您今天已经达到了每日 {MAX_DAILY_AI_REQUESTS} 次对话请求上限。请明天再来吧！"
+            
+            # Save user message
+            conversation_service.add_message(
+                conversation_id=conversation_id,
+                role="user",
+                content=request.message
+            )
+            
+            # Save assistant message
+            conversation_service.add_message(
+                conversation_id=conversation_id,
+                role="assistant",
+                content=reply
+            )
+            
+            return ChatResponse(
+                reply=reply,
+                actions=[],
+                snapshot_id=None,
+                conversation_id=conversation_id
+            )
+
         # Call Agent Orchestrator (before saving user message to avoid duplication)
         result = await agent_orchestrator.process_message(
             user_message=request.message,

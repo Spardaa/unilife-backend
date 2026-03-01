@@ -79,6 +79,10 @@ class UserModel(Base):
     # Chat context clear timestamp
     chat_cleared_at = Column(DateTime, nullable=True)  # 用户上次清空聊天上下文的时间
 
+    # AI request limits
+    daily_ai_request_count = Column(Integer, default=0)
+    last_ai_request_date = Column(String, nullable=True)
+
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
     last_active_at = Column(DateTime, default=datetime.utcnow)
@@ -97,6 +101,8 @@ class UserModel(Base):
             "current_energy": self.current_energy,
             "preferences": self.preferences,
             "chat_cleared_at": self.chat_cleared_at.isoformat() if self.chat_cleared_at else None,
+            "daily_ai_request_count": self.daily_ai_request_count,
+            "last_ai_request_date": self.last_ai_request_date,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_active_at": self.last_active_at.isoformat() if self.last_active_at else None,
         }
@@ -961,6 +967,53 @@ class DatabaseService:
             session.commit()
             session.refresh(user)
             return user.to_dict()
+
+    async def check_and_increment_ai_request(self, user_id: str, limit: int) -> bool:
+        """
+        Check if user has exceeded their daily AI request limit.
+        If not exceeded, increment the count.
+        Returns True if request is allowed, False if limit exceeded.
+        """
+        self._ensure_initialized()
+        with self.get_session() as session:
+            try:
+                from sqlalchemy import or_
+                user = session.query(UserModel).filter(
+                    or_(UserModel.id == user_id, UserModel.user_id == user_id)
+                ).first()
+                if not user:
+                    return True # If user not found, don't block
+                    
+                import datetime
+                import pytz
+                
+                # Get current date in user's timezone
+                tz_str = user.timezone or "Asia/Shanghai"
+                try:
+                    local_tz = pytz.timezone(tz_str)
+                except Exception:
+                    local_tz = pytz.timezone("Asia/Shanghai")
+                    
+                current_date = datetime.datetime.now(local_tz).strftime("%Y-%m-%d")
+                
+                if user.last_ai_request_date != current_date:
+                    # New day, reset count
+                    user.daily_ai_request_count = 1
+                    user.last_ai_request_date = current_date
+                else:
+                    # Same day, check limit
+                    if user.daily_ai_request_count >= limit:
+                        return False
+                    
+                    user.daily_ai_request_count += 1
+                
+                session.commit()
+                return True
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"Error checking AI request limit for {user_id}: {e}")
+                return True # Fail open
 
     # ============ Snapshot Operations ============
 
