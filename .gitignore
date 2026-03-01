@@ -38,3 +38,5 @@ htmlcov/
 __pycache__/
 .pytest_cache/
 .unilife_user_id.txt
+
+data/
