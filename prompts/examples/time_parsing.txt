@@ -10,7 +10,7 @@
 
 ## 模糊时间 [⭐⭐关键更新]
 用户："傍晚健身"
-→ `time_period="EVENING"`, `event_date="2026-01-21"` (今天日期)
+→ `time_period="NIGHT"`, `event_date="2026-01-21"` (今天日期)
 → **不生成具体 start_time**
 → 回复：
 ```

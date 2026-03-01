@@ -98,9 +98,16 @@ async def get_events(
     # Filter out templates from instances
     real_instances = [evt for evt in instances if not evt.get("is_template")]
 
+    # Map for sanitizing invalid time_period values
+    TIME_PERIOD_FIXES = {"EVENING": "NIGHT"}
+
     # Validate real instances
     validated_instances = []
     for event in real_instances:
+        # Sanitize invalid time_period values
+        tp = event.get("time_period")
+        if tp and tp in TIME_PERIOD_FIXES:
+            event = {**event, "time_period": TIME_PERIOD_FIXES[tp]}
         try:
             validated_instances.append(EventResponse(**event))
         except Exception as e:
