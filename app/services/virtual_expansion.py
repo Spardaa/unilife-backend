@@ -114,11 +114,16 @@ class VirtualExpansionService:
 
         occurrences = []
 
-        # Ensure start_date and end_date are timezone-aware
+        # Ensure start_date and end_date are timezone-aware and in the target timezone
         if start_date.tzinfo is None:
             start_date = self.tz.localize(start_date)
+        else:
+            start_date = start_date.astimezone(self.tz)
+            
         if end_date.tzinfo is None:
             end_date = self.tz.localize(end_date)
+        else:
+            end_date = end_date.astimezone(self.tz)
 
         # Get reference date (when the pattern started)
         original_start = template.get("event_date") or template.get("created_at")
@@ -128,9 +133,11 @@ class VirtualExpansionService:
             except:
                 original_start = datetime.utcnow()
 
-        # Ensure timezone awareness
+        # Ensure timezone awareness and normalization
         if original_start.tzinfo is None:
             original_start = self.tz.localize(original_start)
+        else:
+            original_start = original_start.astimezone(self.tz)
 
         # Ensure we don't generate before the event started
         effective_start = max(start_date, self._start_of_day(original_start))
@@ -142,6 +149,8 @@ class VirtualExpansionService:
                 pattern_end = datetime.fromisoformat(pattern["end_date"])
                 if pattern_end.tzinfo is None:
                     pattern_end = self.tz.localize(pattern_end)
+                else:
+                    pattern_end = pattern_end.astimezone(self.tz)
                 pattern_end = self._end_of_day(pattern_end)
             except:
                 pass
@@ -216,6 +225,12 @@ class VirtualExpansionService:
             except:
                 pattern = {}
 
+        # Ensure occurrence_date is timezone-aware and normalized
+        if occurrence_date.tzinfo is None:
+            occurrence_date = self.tz.localize(occurrence_date)
+        else:
+            occurrence_date = occurrence_date.astimezone(self.tz)
+
         # Calculate start time from pattern
         start_time = None
         end_time = None
@@ -226,19 +241,11 @@ class VirtualExpansionService:
                 hour, minute = map(int, time_str.split(":"))
                 start_time = occurrence_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
-                # Ensure timezone awareness
-                if start_time.tzinfo is None:
-                    start_time = self.tz.localize(start_time)
-
                 # Calculate end time from duration
                 duration = template.get("duration") or 30
                 end_time = start_time + timedelta(minutes=duration)
             except:
                 pass
-
-        # Ensure occurrence_date is timezone-aware
-        if occurrence_date.tzinfo is None:
-            occurrence_date = self.tz.localize(occurrence_date)
 
         event_date = self._start_of_day(occurrence_date)
 
@@ -285,12 +292,16 @@ class VirtualExpansionService:
         """Get start of day in configured timezone"""
         if dt.tzinfo is None:
             dt = self.tz.localize(dt)
+        else:
+            dt = dt.astimezone(self.tz)
         return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def _end_of_day(self, dt: datetime) -> datetime:
         """Get end of day in configured timezone"""
         if dt.tzinfo is None:
             dt = self.tz.localize(dt)
+        else:
+            dt = dt.astimezone(self.tz)
         return dt.replace(hour=23, minute=59, second=59, microsecond=999999)
 
 

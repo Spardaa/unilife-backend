@@ -38,6 +38,8 @@ class UserProfile(BaseModel):
             "closing_ritual_enabled": True,      # 睡前仪式
             "event_reminders_enabled": True,     # 日程提醒
             "event_reminder_minutes": 15,        # 提前提醒时间（分钟）
+            # 破冰状态
+            "needs_onboarding": True,            # 是否需要破冰（新用户默认 True）
         },
         description="用户偏好字典"
     )

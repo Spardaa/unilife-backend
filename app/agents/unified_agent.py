@@ -100,6 +100,12 @@ class UnifiedAgent(BaseAgent):
             # 获取工具列表（OpenAI 格式）
             tools_schema = self._convert_tools_to_openai_format()
             
+            # 如果处于破冰阶段，剥夺其他工具，只保留 set_agent_identity 以防 LLM 乱发散
+            user_profile = context.user_profile or {}
+            needs_onboarding = user_profile.get("preferences", {}).get("needs_onboarding", False)
+            if needs_onboarding or identity_service.is_default(context.user_id):
+                tools_schema = [t for t in tools_schema if t.get("function", {}).get("name") == "set_agent_identity"]
+            
             # 调用 LLM
             response = await self.llm.tools_calling(
                 messages=messages,
@@ -271,6 +277,27 @@ class UnifiedAgent(BaseAgent):
 - **标志**: {identity.emoji}
 
 你是一个有自己性格的存在，不是通用助手。"""
+
+        # 破冰提示：如果 AI 身份还是默认的，注入引导指令
+        onboarding_hint = ""
+        user_profile = context.user_profile or {}
+        needs_onboarding = user_profile.get("preferences", {}).get("needs_onboarding", False)
+        
+        if needs_onboarding or identity_service.is_default(context.user_id):
+            # Aggressive override for onboarding flow
+            onboarding_hint = """
+
+======================================================================
+🚨🚨🚨 核心指令：当前处于【破冰初始化映射】阶段 🚨🚨🚨
+======================================================================
+你当前是一个刚刚被唤醒的初始智能体。用户刚刚点击了“唤醒”按钮，现在你要：
+1. 你的第一句话必须主动、热情地向用户打招呼，并抛出互动问题，询问用户希望你叫什么名字、是什么性格（傲娇、温柔、毒舌等）、以及希望用什么 emoji 代表你。
+2. 绝对不要直接回答用户原本的问题或闲聊，你的唯一任务是完成身份设定。
+3. 当用户回答了名字和性格后，你必须立刻调用 `set_agent_identity` 工具保存！
+例子：“你好！我是刚刚被你唤醒的专属 AI 助理 ✨。不过我还没有名字呢！你希望我叫什么名字？想要我是什么性格（比如温柔细心、还是毒舌高冷）？有什么能代表我的 emoji 吗？”
+======================================================================
+"""
+            identity_content += onboarding_hint
 
         # 模板变量替换
         prompt = prompt.replace("{agent_name}", identity.name)

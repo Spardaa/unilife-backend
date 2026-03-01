@@ -199,6 +199,45 @@ async def get_user_stats(user_id: str = Depends(get_current_user)):
 # Note: Register and login endpoints are handled by /api/v1/auth router
 # These are kept here for potential future use but currently return 404
 
+# ==================== Onboarding Status ====================
+
+@router.get("/users/me/onboarding-status")
+async def get_onboarding_status(user_id: str = Depends(get_current_user)):
+    """
+    获取用户的破冰状态
+
+    返回 { "needs_onboarding": true/false }
+    前端根据此字段决定是否显示"唤醒"按钮替代输入框。
+    """
+    user = await db_service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user_field_id = user.get("user_id") or user_id
+    user_profile = profile_service.get_or_create_profile(user_field_id)
+
+    return {
+        "needs_onboarding": user_profile.preferences.get("needs_onboarding", True)
+    }
+
+@router.post("/users/me/onboarding-status/dismiss")
+async def dismiss_onboarding_status(user_id: str = Depends(get_current_user)):
+    """
+    隐藏破冰"唤醒"按钮（由前端在点击按钮时触发）
+    """
+    user = await db_service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user_field_id = user.get("user_id") or user_id
+    user_profile = profile_service.get_or_create_profile(user_field_id)
+    
+    # Update preference
+    user_profile.preferences["needs_onboarding"] = False
+    profile_service.save_profile(user_field_id, user_profile)
+    
+    return {"status": "success", "needs_onboarding": False}
+
 # ==================== Notification Settings ====================
 
 @router.get("/users/me/notification-settings", response_model=NotificationSettings)

@@ -2849,6 +2849,7 @@ async def tool_set_agent_identity(
     """更新 AI 的身份配置"""
     try:
         from app.services.identity_service import identity_service
+        from app.services.profile_service import profile_service
         from app.models.identity import AgentIdentity
         
         # 补全缺省特性
@@ -2859,10 +2860,13 @@ async def tool_set_agent_identity(
             name=name,
             emoji=emoji,
             vibe=vibe,
-            creature="生活伙伴" # 默认不提供修改creature的接口以防崩毁
+            creature="生活伙伴"
         )
         
         identity_service.set_identity(user_id, new_identity)
+        
+        # 破冰完成：将 needs_onboarding 设为 false
+        profile_service.update_preference(user_id, "needs_onboarding", False)
         
         return {
             "success": True,

@@ -508,14 +508,15 @@ class BackgroundTaskScheduler:
         """
         检查单个用户的通知时间点
         
+        统一推送路径：只通过 proactive_check_agent 进行 AI 自主决策。
+        早中晚报不再单独推送（已合并到 proactive_check 的 prompt 中）。
+        
         Args:
             user_id: 用户 UUID (users.id)
             current_hm: 当前时间 HH:MM 格式
             current_time_dt: 当前北京时间 datetime 对象
         """
         try:
-            # 获取用户设置
-            # user_id 是 UUID，需要找到对应的 Apple ID 来查 profile
             from app.services.profile_service import profile_service
             apple_id = self._get_apple_id(user_id)
             profile_key = apple_id if apple_id else user_id
@@ -525,29 +526,11 @@ class BackgroundTaskScheduler:
             wake_time = settings.get("wake_time", "08:00")
             sleep_time = settings.get("sleep_time", "22:00")
             
-            # 早安简报 - 用户起床时间
-            if current_hm == wake_time:
-                print(f"[Scheduler] Triggering morning briefing for user {user_id[:8]}... (profile: {profile_key[:8]}...)")
-                await self.notification_scheduler.send_morning_briefing(user_id)
-            
-            # 午间检查 - 固定 12:00
-            if current_hm == "12:00":
-                print(f"[Scheduler] Triggering afternoon check-in for user {user_id[:8]}...")
-                await self.notification_scheduler.send_afternoon_checkin(user_id)
-            
-            # 晚间切换 - 固定 18:00
-            if current_hm == "18:00":
-                print(f"[Scheduler] Triggering evening switch for user {user_id[:8]}...")
-                await self.notification_scheduler.send_evening_switch(user_id)
-            
-            # 睡前仪式 - 睡觉时间前15分钟
+            # 睡前时间
             ritual_time = self._subtract_minutes(sleep_time, 15)
-            if current_hm == ritual_time:
-                print(f"[Scheduler] Triggering closing ritual for user {user_id[:8]}...")
-                await self.notification_scheduler.send_closing_ritual(user_id)
             
-            # === 自主检查 (Proactive Check) ===
-            # 在四个时间点触发 AI 自主思考
+            # === 统一 AI 自主检查 (Heartbeat) ===
+            # 在四个时间点触发 AI 自主思考（合并了原来的早中晚报 + 自主检查）
             check_mapping = {
                 wake_time: "morning",
                 "12:00": "noon",
@@ -557,6 +540,7 @@ class BackgroundTaskScheduler:
             check_type = check_mapping.get(current_hm)
             if check_type:
                 try:
+                    print(f"[Scheduler] Heartbeat [{check_type}] for user {user_id[:8]}...")
                     await proactive_check_agent.run_check(
                         user_id=user_id,
                         check_type=check_type

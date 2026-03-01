@@ -32,10 +32,15 @@ class IdentityService:
         # Merge with defaults
         return AgentIdentity(**identity_data)
     
-    def set_identity(self, user_id: str, identity: AgentIdentity) -> None:
-        """设置 AI 身份"""
+    def set_identity(self, user_id: str, identity: AgentIdentity):
+        """保存用户的 AI 身份配置（使用统一的 markdown 格式）"""
         content = self._format_identity(identity)
         user_data_service.write_file(user_id, IDENTITY_FILENAME, content)
+
+    def is_default(self, user_id: str) -> bool:
+        """检查 AI 是否处于默认状态（即尚未进行过个性化配置）"""
+        identity = self.get_identity(user_id)
+        return identity.name == "UniLife" and identity.emoji == "🌟"
 
     def _format_identity(self, identity: AgentIdentity) -> str:
         """序列化身份信息到 markdown"""
