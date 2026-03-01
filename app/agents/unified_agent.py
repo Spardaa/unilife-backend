@@ -21,6 +21,7 @@ from app.agents.base import (
 from app.agents.tools import tool_registry
 from app.services.db import db_service
 from app.services.soul_service import soul_service
+from app.services.identity_service import identity_service
 
 
 logger = logging.getLogger("unified_agent")
@@ -228,7 +229,7 @@ class UnifiedAgent(BaseAgent):
         """
         异步构建系统提示词，多租户解耦：注入项目列表、身份(identity)、灵魂(soul)、操作边界(boundaries)和记忆(memory)
         """
-        from app.services.identity_service import identity_service
+
         
         # 获取基础组装模板
         try:
@@ -294,7 +295,7 @@ class UnifiedAgent(BaseAgent):
             identity_story += onboarding_hint
 
         # 模板变量替换
-        prompt = prompt.replace("{agent_name}", identity.name)
+        prompt = prompt.replace("{agent_name}", identity.name or "AI助理")
         prompt = prompt.replace("{identity_story}", identity_story)
         prompt = prompt.replace("{soul_content}", soul_content)
         prompt = prompt.replace("{memory_content}", memory_content)

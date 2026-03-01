@@ -2843,7 +2843,7 @@ async def tool_update_soul(user_id: str, new_content: str, reason: str = "") -> 
 async def tool_set_agent_identity(
     user_id: str,
     name: str,
-    emoji: str = "🌟",
+    emoji: str = "",
     vibe: str = ""
 ) -> Dict[str, Any]:
     """更新 AI 的身份配置"""
@@ -2852,6 +2852,11 @@ async def tool_set_agent_identity(
         from app.services.profile_service import profile_service
         from app.models.identity import AgentIdentity
         
+        # 用户不想自定义时，回退到默认值
+        if not name:
+            name = "UniLife"
+        if not emoji:
+            emoji = "🌟"
         # 补全缺省特性
         if not vibe:
             vibe = "温暖但不腻，关注效率的同时也会有感性的关怀"
