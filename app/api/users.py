@@ -238,6 +238,39 @@ async def dismiss_onboarding_status(user_id: str = Depends(get_current_user)):
     
     return {"status": "success", "needs_onboarding": False}
 
+# ==================== AI Identity ====================
+
+@router.get("/users/me/ai-identity")
+async def get_ai_identity(user_id: str = Depends(get_current_user)):
+    """
+    获取用户的专属 AI 身份配置（名字、标志等）
+    
+    返回：
+    {
+      "name": "yuki",
+      "emoji": "❄️",
+      "creature": "生活伙伴",
+      "vibe": "..."
+    }
+    """
+    user = await db_service.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    from app.services.identity_service import identity_service
+    identity = identity_service.get_identity(user_id)
+    
+    # Fallback default values
+    name = identity.name if identity.name else "UniLife"
+    emoji = identity.emoji if identity.emoji else "🌟"
+    
+    return {
+        "name": name,
+        "emoji": emoji,
+        "creature": identity.creature,
+        "vibe": identity.vibe
+    }
+
 # ==================== Notification Settings ====================
 
 @router.get("/users/me/notification-settings", response_model=NotificationSettings)
