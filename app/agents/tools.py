@@ -1139,6 +1139,36 @@ def register_all_tools():
     )
 
 
+    # 34. 设置AI身份
+    tool_registry.register(
+        name="set_agent_identity",
+        description="设置你的身份配方（名字、标志、性格描述）。只有当用户明确要求更改你的称呼或者性格特点时才调用。对于单次聊天的风格要求（如'这句话说得逗一点'）不需要永久修改身份。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "description": "用户ID"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "AI的名字"
+                },
+                "emoji": {
+                    "type": "string",
+                    "description": "代表你的emoji字符"
+                },
+                "vibe": {
+                    "type": "string",
+                    "description": "整体性格特征和交流方式"
+                }
+            },
+            "required": ["user_id", "name"]
+        },
+        func=tool_set_agent_identity
+    )
+
+
 # ============ Tool 实现函数 ============
 
 # 时区处理辅助函数
@@ -2809,6 +2839,42 @@ async def tool_update_soul(user_id: str, new_content: str, reason: str = "") -> 
             "message": f"灵魂文件更新失败：{str(e)}"
         }
 
+
+async def tool_set_agent_identity(
+    user_id: str,
+    name: str,
+    emoji: str = "🌟",
+    vibe: str = ""
+) -> Dict[str, Any]:
+    """更新 AI 的身份配置"""
+    try:
+        from app.services.identity_service import identity_service
+        from app.models.identity import AgentIdentity
+        
+        # 补全缺省特性
+        if not vibe:
+            vibe = "温暖但不腻，关注效率的同时也会有感性的关怀"
+            
+        new_identity = AgentIdentity(
+            name=name,
+            emoji=emoji,
+            vibe=vibe,
+            creature="生活伙伴" # 默认不提供修改creature的接口以防崩毁
+        )
+        
+        identity_service.set_identity(user_id, new_identity)
+        
+        return {
+            "success": True,
+            "message": f"身份已更新为: {name} {emoji}",
+            "identity": new_identity.model_dump()
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "message": f"身份更新失败：{str(e)}"
+        }
 
 # 初始化时注册所有工具
 register_all_tools()

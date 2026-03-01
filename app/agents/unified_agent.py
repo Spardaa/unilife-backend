@@ -220,33 +220,67 @@ class UnifiedAgent(BaseAgent):
     
     async def _build_system_prompt_async(self, context: ConversationContext) -> str:
         """
-        异步构建系统提示词，注入项目列表、灵魂和记忆
+        异步构建系统提示词，多租户解耦：注入项目列表、身份(identity)、灵魂(soul)、操作边界(boundaries)和记忆(memory)
         """
-        # 获取基础提示（含时间替换）
-        prompt = self._build_system_prompt(context)
+        from app.services.identity_service import identity_service
         
-        # 注入用户项目
+        # 获取基础组装模板
+        try:
+            prompt = prompt_service.load_prompt("agents/unified")
+        except Exception as e:
+            logger.warning(f"Failed to load unified prompt template: {e}, using default")
+            prompt = self._get_default_system_prompt()
+            
+        # 获取各模块内容
+        identity = identity_service.get_identity(context.user_id)
+        
+        try:
+            soul_content = soul_service.get_soul(context.user_id)
+        except Exception as e:
+            logger.warning(f"Failed to load soul: {e}")
+            soul_content = "（暂无特殊灵魂特征）"
+            
+        try:
+            boundaries_content = prompt_service.load_prompt("agents/boundaries")
+        except Exception as e:
+            logger.warning(f"Failed to load boundaries: {e}")
+            boundaries_content = "（未加载到操作边界，默认规则：调用工具前不废话）"
+            
+        memory_content = context.request_metadata.get("memory_content", "")
+        if not memory_content:
+            memory_content = "（暂无相关记忆）"
+            
         try:
             projects = await db_service.get_projects(context.user_id, is_active=True)
             projects_str = self._format_user_projects(projects)
         except Exception as e:
             logger.warning(f"Failed to load user projects: {e}")
             projects_str = "暂无人生项目"
-        prompt = prompt.replace("{user_projects}", projects_str)
+            
+        user_profile_summary = self._format_user_profile(context.user_profile)
         
-        # 注入灵魂文件 (soul.md)
-        try:
-            soul_content = soul_service.get_soul(context.user_id)
-        except Exception as e:
-            logger.warning(f"Failed to load soul: {e}")
-            soul_content = ""
+        # 当前时间
+        current_time = context.current_time or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 格式化 Identity block
+        identity_content = f"""# 你的身份
+
+- **名字**: {identity.name}
+- **角色**: {identity.creature}
+- **性格**: {identity.vibe}
+- **标志**: {identity.emoji}
+
+你是一个有自己性格的存在，不是通用助手。"""
+
+        # 模板变量替换
+        prompt = prompt.replace("{agent_name}", identity.name)
+        prompt = prompt.replace("{identity_content}", identity_content)
         prompt = prompt.replace("{soul_content}", soul_content)
-        
-        # 注入记忆内容（由 ContextFilter 选择性决定）
-        memory_content = context.request_metadata.get("memory_content", "")
-        if not memory_content:
-            memory_content = "（暂无相关记忆）"
         prompt = prompt.replace("{memory_content}", memory_content)
+        prompt = prompt.replace("{current_time}", current_time)
+        prompt = prompt.replace("{user_projects}", projects_str)
+        prompt = prompt.replace("{boundaries_content}", boundaries_content)
+        prompt = prompt.replace("{user_profile_summary}", user_profile_summary)
         
         return prompt
     
