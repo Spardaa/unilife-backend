@@ -27,16 +27,20 @@ logger = logging.getLogger("memory_service")
 
 MEMORY_FILENAME = "memory.md"
 
-_INITIAL_MEMORY = """# UniLife Memory
+_INITIAL_MEMORY = """# 记忆
 
-## UniLife 眼中的用户
+## 关于用户
 
-_（暂无记录）_
+_（暂无记录，Observer 会在每日复盘时更新这里）_
 
-## Weekly Summary
+---
+
+## 本周观察
 
 
-## Recent Diary
+---
+
+## 近期日记
 
 """.strip()
 
@@ -55,11 +59,29 @@ class MemoryService:
             content = self._initialize(user_id)
         return content
 
+    def get_long_term_memory(self, user_id: str) -> str:
+        """提取「关于用户」长期记忆区块（每次对话都注入）"""
+        full = self.get_memory(user_id)
+        # 新格式：## 关于用户
+        match = re.search(r"## 关于用户[^\n]*\n(.*?)(?=\n---|\n## |$)", full, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            # 过滤掉初始占位符
+            if content and content != "_（暂无记录，Observer 会在每日复盘时更新这里）_" and content != "_（暂无记录）_":
+                return content
+        # 兼容旧格式：## UniLife 眼中的用户
+        match = re.search(r"## UniLife 眼中的用户[^\n]*\n(.*?)(?=\n## |$)", full, re.DOTALL)
+        if match:
+            content = match.group(1).strip()
+            if content and content != "_（暂无记录）_":
+                return content
+        return ""
+
     def get_recent_diary(self, user_id: str, days: int = 7) -> str:
         """提取近 N 天的日记条目（供 ContextFilter 注入）"""
         full = self.get_memory(user_id)
-        # 提取 Recent Diary 段落
-        match = re.search(r"## Recent Diary\s*\n(.*)", full, re.DOTALL)
+        # 兼容新旧格式
+        match = re.search(r"## (?:近期日记|Recent Diary)\s*\n(.*)", full, re.DOTALL)
         if not match:
             return ""
         return match.group(1).strip()
@@ -67,7 +89,7 @@ class MemoryService:
     def get_weekly_summary(self, user_id: str) -> str:
         """提取历史摘要部分"""
         full = self.get_memory(user_id)
-        match = re.search(r"## Weekly Summary\s*\n(.*?)(?=\n## )", full, re.DOTALL)
+        match = re.search(r"## (?:本周观察|Weekly Summary)\s*\n(.*?)(?=\n---|\n## )", full, re.DOTALL)
         if not match:
             return ""
         return match.group(1).strip()
@@ -90,7 +112,7 @@ class MemoryService:
             相关的记忆片段文本，如无相关内容则返回近 3 天日记
         """
         full = self.get_memory(user_id)
-        diary_match = re.search(r"## Recent Diary\s*\n(.*)", full, re.DOTALL)
+        diary_match = re.search(r"## (?:近期日记|Recent Diary)\s*\n(.*)", full, re.DOTALL)
         if not diary_match:
             return ""
 
@@ -126,29 +148,34 @@ class MemoryService:
 
     def update_user_perception(self, user_id: str, perception: str, pattern_notes: list = None) -> None:
         """
-        更新 memory.md 中 '## UniLife 眼中的用户' 区块。
+        更新 memory.md 中「关于用户」长期记忆区块。
         
         由 Observer 每日调用，用自然语言描述对用户的认识。
         该区块会被替换（而非追加），保持简洁。
 
         Args:
             user_id: 用户 ID
-            perception: 自然语言描述 ("他最近压力大，但还是坚持运动...")
-            pattern_notes: 行为模式列表 (["低估写作时长", "下午效率最高"])
+            perception: 自然语言描述
+            pattern_notes: 行为模式列表
         """
-        import re
         full = self.get_memory(user_id)
-
-        # 构建新的用户认知区块
-        today = __import__("datetime").date.today().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")
         patterns_str = ""
         if pattern_notes:
             patterns_str = "\n" + "\n".join(f"- {p}" for p in pattern_notes)
 
-        new_block = f"## UniLife 眼中的用户\n\n_（最后更新：{today}）_\n\n{perception}{patterns_str}\n"
+        new_block = f"## 关于用户\n\n_（最后更新：{today}）_\n\n{perception}{patterns_str}\n"
 
-        # 替换或追加
-        if "## UniLife 眼中的用户" in full:
+        # 尝试替换新格式
+        if "## 关于用户" in full:
+            new_full = re.sub(
+                r"## 关于用户[^\n]*\n.*?(?=\n---|\n## |\Z)",
+                new_block,
+                full,
+                flags=re.DOTALL
+            )
+        # 兼容旧格式
+        elif "## UniLife 眼中的用户" in full:
             new_full = re.sub(
                 r"## UniLife 眼中的用户.*?(?=\n## |\Z)",
                 new_block + "\n",
@@ -156,9 +183,9 @@ class MemoryService:
                 flags=re.DOTALL
             )
         else:
-            # 插入到最前面
+            # 插入到标题后面
             new_full = re.sub(
-                r"(# UniLife Memory\s*)",
+                r"(# (?:记忆|UniLife Memory)\s*)",
                 f"\\1\n{new_block}\n",
                 full
             )
@@ -189,10 +216,10 @@ class MemoryService:
         new_block = f"\n### {date_str} {weekday}\n{entry}\n"
 
         # 插入到 Recent Diary 末尾
-        if "## Recent Diary" in full:
+        if "## 近期日记" in full or "## Recent Diary" in full:
             full = full.rstrip() + "\n" + new_block
         else:
-            full += f"\n## Recent Diary\n{new_block}"
+            full += f"\n## 近期日记\n{new_block}"
 
         user_data_service.write_file(user_id, MEMORY_FILENAME, full)
         logger.info(f"Diary appended for user {user_id} on {date_str}")
@@ -212,7 +239,7 @@ class MemoryService:
         full = self.get_memory(user_id)
 
         # 提取 Recent Diary 区域
-        diary_match = re.search(r"(## Recent Diary\s*\n)(.*)", full, re.DOTALL)
+        diary_match = re.search(r"(## (?:近期日记|Recent Diary)\s*\n)(.*)", full, re.DOTALL)
         if not diary_match:
             return
 
@@ -234,7 +261,7 @@ class MemoryService:
         new_diary = diary_header + "\n".join(kept) + "\n"
 
         # 追加摘要到 Weekly Summary
-        summary_match = re.search(r"(## Weekly Summary\s*\n)(.*?)(?=\n## )", full, re.DOTALL)
+        summary_match = re.search(r"(## (?:本周观察|Weekly Summary)\s*\n)(.*?)(?=\n---|\n## )", full, re.DOTALL)
         if summary_match:
             old_summary = summary_match.group(2).strip()
             new_summary_block = (old_summary + "\n\n" + summary_text).strip()
@@ -242,7 +269,7 @@ class MemoryService:
             after_summary = full[summary_match.end(2):diary_match.start()]
             new_full = before + new_summary_block + "\n" + after_summary + new_diary
         else:
-            new_full = full[:diary_match.start()] + f"## Weekly Summary\n{summary_text}\n\n" + new_diary
+            new_full = full[:diary_match.start()] + f"## 本周观察\n{summary_text}\n\n" + new_diary
 
         user_data_service.write_file(user_id, MEMORY_FILENAME, new_full)
         logger.info(f"Memory consolidated for user {user_id}, cutoff={cutoff_date}")

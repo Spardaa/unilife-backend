@@ -92,7 +92,11 @@ class ObserverAgent(BaseAgent):
             print(f"[Observer Agent] Error loading observer prompt: {e}")
             return None
 
-        final_prompt = base_prompt.replace("{soul_content}", soul_content).replace("{memory_content}", memory_content)
+        # 注入身份名称
+        from app.services.identity_service import identity_service
+        identity = identity_service.get_identity(user_id)
+        final_prompt = base_prompt.replace("{agent_name}", identity.name or "AI助理")
+        final_prompt = final_prompt.replace("{soul_content}", soul_content).replace("{memory_content}", memory_content)
         
         full_prompt = f"""{final_prompt}
 
@@ -121,6 +125,12 @@ class ObserverAgent(BaseAgent):
             if soul_update:
                 soul_service.update_soul(user_id, soul_update)
                 print(f"[Observer Agent] Soul updated for {user_id} on {date_str}")
+            
+            # 更新用户画像（长期记忆）
+            user_profile_update = updates.get("user_profile_update")
+            if user_profile_update:
+                memory_service.update_user_perception(user_id, user_profile_update)
+                print(f"[Observer Agent] User profile updated for {user_id} on {date_str}")
                 
             return updates
         else:
@@ -253,6 +263,7 @@ class ObserverAgent(BaseAgent):
                 "updates": {
                     "diary_entry": data.get("diary_entry"),
                     "soul_update": data.get("soul_update"),
+                    "user_profile_update": data.get("user_profile_update"),
                 }
             }
 

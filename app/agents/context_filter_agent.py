@@ -98,14 +98,20 @@ class ContextFilterAgent(BaseAgent):
             logger.warning(f"LLM filter failed: {e}, using fallback")
             # 降级到关键词匹配
             filtered_context = self._fallback_filter(context)
+            # 降级时也注入近 3 天日记，不让 AI 完全失忆
+            fallback_memory = ""
+            try:
+                fallback_memory = memory_service.get_recent_diary(context.user_id, days=3)
+            except Exception as me:
+                logger.warning(f"Failed to load fallback memory: {me}")
             return AgentResponse(
                 content=f"[Filter] 关键词筛选，保留 {len(filtered_context)} 条",
                 metadata={
                     "original_count": len(context.conversation_history),
                     "filtered_count": len(filtered_context),
                     "filter_method": "fallback",
-                    "inject_memory": False,
-                    "memory_content": ""
+                    "inject_memory": bool(fallback_memory),
+                    "memory_content": fallback_memory
                 },
                 filtered_context=filtered_context
             )

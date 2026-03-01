@@ -1,10 +1,14 @@
-# UniLife Memory
+# 记忆
 
-## UniLife 眼中的用户
+## 关于用户
 
-_（暂无记录）_
+_（暂无记录，Observer 会在每日复盘时更新这里）_
 
-## Weekly Summary
+---
+
+## 本周观察
 
 
-## Recent Diary
+---
+
+## 近期日记
