@@ -14,7 +14,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy import create_engine, text
-from app.config import settings
 from app.models.conversation_summary import ConversationSummary
 
 
@@ -22,8 +21,13 @@ def migrate():
     """Run the migration"""
     print("Adding conversation_summaries table...")
 
+    # Calculate the path to unilife.db at the project root
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    db_path = os.path.join(project_root, "unilife.db")
+    database_url = f"sqlite:///{db_path}"
+
     # Create engine
-    engine = create_engine(settings.database_url, echo=True)
+    engine = create_engine(database_url, echo=True)
 
 
     # Create table
