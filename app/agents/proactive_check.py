@@ -44,7 +44,7 @@ PROACTIVE_SYSTEM_PROMPT = """你是 {agent_name} {agent_emoji}，你正在进行
 ## 你的灵魂
 {soul_content}
 
-## 你的近期记忆
+## 你的记忆
 {memory_content}
 
 ## 本时段日程（{check_type_label}）
@@ -159,7 +159,16 @@ class ProactiveCheckAgent:
 
         # 收集上下文
         soul_content = soul_service.get_soul(user_id)
-        memory_content = memory_service.get_recent_diary(user_id, days=3)
+
+        # 分层记忆：长期（关于用户）+ 短期（近期日记）
+        long_term_memory = memory_service.get_long_term_memory(user_id)
+        recent_memory = memory_service.get_recent_diary(user_id, days=3)
+        memory_parts = []
+        if long_term_memory:
+            memory_parts.append(f"### 关于用户\n\n{long_term_memory}")
+        if recent_memory:
+            memory_parts.append(f"### 近期日记\n\n{recent_memory}")
+        memory_content = "\n\n---\n\n".join(memory_parts) if memory_parts else "（暂无记忆）"
 
         # 获取日程（按时段过滤 + 全天 + 明天）
         today_str = now.strftime("%Y-%m-%d")

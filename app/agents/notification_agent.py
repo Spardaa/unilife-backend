@@ -23,6 +23,7 @@ from datetime import datetime
 from app.services.llm import llm_service
 from app.services.soul_service import soul_service
 from app.services.memory_service import memory_service
+from app.services.identity_service import identity_service
 from app.services.notification_service import notification_service
 from app.services.conversation_service import conversation_service
 from app.models.notification import (
@@ -87,8 +88,18 @@ class NotificationAgent:
         current_time = current_time or now.strftime("%Y-%m-%d %H:%M")
 
         # 收集 Checklist
+        identity = identity_service.get_identity(user_id)
         soul_content = soul_service.get_soul(user_id)
-        memory_content = memory_service.get_recent_diary(user_id, days=3)
+
+        # 分层记忆：长期（关于用户）+ 短期（近期日记）
+        long_term_memory = memory_service.get_long_term_memory(user_id)
+        recent_memory = memory_service.get_recent_diary(user_id, days=3)
+        memory_parts = []
+        if long_term_memory:
+            memory_parts.append(f"### 关于用户\n\n{long_term_memory}")
+        if recent_memory:
+            memory_parts.append(f"### 近期日记\n\n{recent_memory}")
+        memory_content = "\n\n---\n\n".join(memory_parts) if memory_parts else "（暂无记忆）"
 
         # 格式化事件列表
         events_str = self._format_events(events) if events else "（本时段暂无日程）"
@@ -97,8 +108,11 @@ class NotificationAgent:
         prompt = self._periodic_prompt.format(
             current_time=current_time,
             notification_type=self._period_label(period),
+            agent_name=identity.name or "UniLife",
+            agent_emoji=identity.emoji or "🤖",
+            agent_vibe=identity.vibe or "友好",
             soul_content=soul_content or "（尚未形成）",
-            memory_content=memory_content or "（暂无记忆）",
+            memory_content=memory_content,
             today_events=events_str,
             recent_context=recent_context or "（最近没有对话）"
         )
@@ -168,6 +182,7 @@ class NotificationAgent:
         now = datetime.now(user_tz)
         current_time = current_time or now.strftime("%Y-%m-%d %H:%M")
 
+        identity = identity_service.get_identity(user_id)
         soul_content = soul_service.get_soul(user_id)
 
         # 检索与该事件相关的记忆
@@ -180,6 +195,9 @@ class NotificationAgent:
         # 渲染 prompt（从外部 txt 文件加载）
         prompt = self._event_prompt.format(
             current_time=current_time,
+            agent_name=identity.name or "UniLife",
+            agent_emoji=identity.emoji or "🤖",
+            agent_vibe=identity.vibe or "友好",
             soul_content=soul_content or "（尚未形成）",
             memory_content=memory_content or "（无相关记忆）",
             event_title=event_title,
