@@ -11,6 +11,7 @@ import pytz
 
 from app.models.conversation import Conversation, Message, Base
 from app.config import settings
+from app.services.conversation_summary_service import conversation_summary_service
 
 
 def _get_user_local_time(utc_time: datetime, timezone_str: str = "Asia/Shanghai") -> datetime:
@@ -545,6 +546,72 @@ class ConversationService:
             return result
         finally:
             db.close()
+
+    async def add_message_with_summary_check(
+        self,
+        conversation_id: str,
+        user_id: str,
+        role: str,
+        content: str,
+        tool_calls: str = None,
+        tool_call_id: str = None,
+        tokens_used: int = None,
+        extra_metadata: str = None,
+        trigger_summary: bool = True
+    ) -> Message:
+        """
+        添加消息并在需要时触发摘要生成
+
+        Args:
+            conversation_id: 对话ID
+            user_id: 用户ID（用于摘要生成）
+            role: 消息角色
+            content: 消息内容
+            tool_calls: 工具调用JSON字符串（可选）
+            tool_call_id: 工具调用ID（可选）
+            tokens_used: 使用的token数量（可选）
+            extra_metadata: 元数据JSON字符串（可选）
+            trigger_summary: 是否触发摘要检查（默认True）
+
+        Returns:
+            Message 对象
+        """
+        # 先同步添加消息
+        message = self.add_message(
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+            tokens_used=tokens_used,
+            extra_metadata=extra_metadata
+        )
+
+        # 异步检查并生成摘要（仅在 user 或 assistant 消息时触发）
+        if trigger_summary and role in ("user", "assistant"):
+            try:
+                # 获取当前消息数
+                db = self.get_session()
+                try:
+                    msg_count = db.query(Message).filter(
+                        Message.conversation_id == conversation_id
+                    ).count()
+                finally:
+                    db.close()
+
+                # 检查并生成摘要
+                await conversation_summary_service.check_and_generate_summary(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    current_message_count=msg_count
+                )
+            except Exception as e:
+                # 摘要生成失败不影响主流程
+                import logging
+                logging.getLogger("conversation_service").warning(f"Summary generation failed: {e}")
+
+        return message
+
 
 # 全局对话服务实例
 conversation_service = ConversationService()

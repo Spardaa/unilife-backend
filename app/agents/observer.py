@@ -12,6 +12,7 @@ from app.services.prompt import prompt_service
 from app.services.conversation_service import conversation_service
 from app.services.memory_service import memory_service
 from app.services.soul_service import soul_service
+from app.services.identity_service import identity_service
 from app.agents.base import (
     BaseAgent, ConversationContext, AgentResponse
 )
@@ -110,7 +111,6 @@ class ObserverAgent(BaseAgent):
             return None
 
         # 注入身份名称
-        from app.services.identity_service import identity_service
         identity = identity_service.get_identity(user_id)
         final_prompt = base_prompt.replace("{agent_name}", identity.name or "AI助理")
         final_prompt = final_prompt.replace("{soul_content}", soul_content).replace("{memory_content}", memory_content)
@@ -170,14 +170,16 @@ class ObserverAgent(BaseAgent):
         from datetime import datetime, timedelta
         
         cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        recent_diary = memory_service.get_recent_diary(user_id)
+        # 使用 days=0 获取所有日记，而不是只获取近 7 天的
+        # 因为我们要找的是超过 7 天的旧日记来压缩
+        all_diary = memory_service.get_recent_diary(user_id, days=0)
 
-        if not recent_diary or len(recent_diary) < 100:
+        if not all_diary or len(all_diary) < 100:
             return None
 
         # 提取需要压缩的旧日记
         import re
-        entries = re.split(r"(?=### \d{4}-\d{2}-\d{2})", recent_diary)
+        entries = re.split(r"(?=### \d{4}-\d{2}-\d{2})", all_diary)
         old_entries = []
         for entry in entries:
             entry = entry.strip()
@@ -192,12 +194,23 @@ class ObserverAgent(BaseAgent):
 
         old_text = "\n\n".join(old_entries)
 
+        # 加载用户个性化数据
+        identity = identity_service.get_identity(user_id)
+        soul_content = soul_service.get_soul(user_id)
+        identity_story = identity_service.format_identity_story(identity)
+
         try:
             base_prompt = prompt_service.get_prompt("agents/memory_consolidation")
         except Exception:
             base_prompt = "请将以下几天的日记精炼为一段简短的周报摘要（2-4句话）。\n\n## 原始日记\n{old_text}"
 
-        prompt = base_prompt.replace("{old_text}", old_text)
+        # 变量替换
+        prompt = base_prompt
+        prompt = prompt.replace("{agent_name}", identity.name or "AI助理")
+        prompt = prompt.replace("{agent_emoji}", identity.emoji or "")
+        prompt = prompt.replace("{identity_story}", identity_story)
+        prompt = prompt.replace("{soul_content}", soul_content)
+        prompt = prompt.replace("{old_text}", old_text)
 
         messages = [{"role": "user", "content": prompt}]
         response = await self.llm.chat_completion(

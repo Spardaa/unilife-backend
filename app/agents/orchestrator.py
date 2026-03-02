@@ -267,7 +267,17 @@ class AgentOrchestrator:
         except:
             user_decision_profile = None
 
-        # 构建上下文
+        # 获取对话摘要（滚动摘要机制）
+        conversation_summary = None
+        try:
+            from app.services.conversation_summary_service import conversation_summary_service
+            conversation_summary = conversation_summary_service.get_active_summary(
+                user_id=user_id,
+                conversation_id=conversation_id
+            )
+        except Exception as e:
+            logger.debug(f"Failed to get conversation summary: {e}")
+            conversation_summary = None
         # 获取当前时间（用户本地时间，默认使用Asia/Shanghai时区）
         import pytz
         user_tz = pytz.timezone("Asia/Shanghai")  # TODO: 从用户profile获取时区
@@ -306,7 +316,8 @@ class AgentOrchestrator:
             conversation_history=context_messages,
             user_profile=user_profile,
             user_decision_profile=user_decision_profile,
-            current_time=current_time_with_period  # 传入带时段信息的时间
+            current_time=current_time_with_period,  # 传入带时段信息的时间
+            conversation_summary=conversation_summary  # 传入对话摘要
         )
 
         return context

@@ -95,6 +95,7 @@ class ConversationContext(BaseModel):
     - 对话历史
     - 当前意图
     - 上游 Agent 的执行结果
+    - 对话摘要（滚动摘要机制）
     """
     # 基础信息
     user_id: str
@@ -112,6 +113,9 @@ class ConversationContext(BaseModel):
 
     # 对话历史（LLM 格式）
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
+
+    # 对话摘要（滚动摘要机制）
+    conversation_summary: Optional[str] = None  # 历史对话摘要
 
     # 建议选项（从 Executor 的 provide_suggestions 工具返回）
     suggestions: Optional[List[Dict[str, Any]]] = None
@@ -183,6 +187,61 @@ class BaseAgent(ABC, Generic[T]):
 
 # ============ Utility Functions ============
 
+# 需要保留在上下文中的工具名称（交互式工具）
+CONTEXT_TOOLS = {"provide_suggestions", "ask_user_questions"}
+
+
+def filter_tool_calls_from_history(
+    history: List[Dict[str, Any]],
+    keep_tool_names: set = CONTEXT_TOOLS
+) -> List[Dict[str, Any]]:
+    """
+    过滤历史消息中的工具调用，只保留交互式工具
+
+    交互式工具（provide_suggestions, ask_user_questions）需要保留，
+    因为 AI 需要知道之前问过用户什么问题、用户选了什么。
+    其他工具（如 create_event、query_events）的结果已经体现在对话内容中，
+    不需要保留 tool_calls 细节。
+
+    Args:
+        history: 历史消息列表
+        keep_tool_names: 需要保留的工具名称集合
+
+    Returns:
+        过滤后的消息列表
+    """
+    filtered = []
+    valid_tool_call_ids = set()
+
+    for msg in history:
+        role = msg.get("role")
+
+        if role == "assistant" and msg.get("tool_calls"):
+            # 过滤 tool_calls，只保留交互式工具
+            kept_tool_calls = [
+                tc for tc in msg["tool_calls"]
+                if tc.get("function", {}).get("name") in keep_tool_names
+            ]
+            valid_tool_call_ids.update(tc["id"] for tc in kept_tool_calls)
+
+            filtered_msg = {**msg}
+            if kept_tool_calls:
+                filtered_msg["tool_calls"] = kept_tool_calls
+            else:
+                # 移除空的 tool_calls 字段
+                filtered_msg.pop("tool_calls", None)
+            filtered.append(filtered_msg)
+
+        elif role == "tool":
+            # 只保留对应的 tool 消息（交互式工具的返回）
+            if msg.get("tool_call_id") in valid_tool_call_ids:
+                filtered.append(msg)
+        else:
+            filtered.append(msg)
+
+    return filtered
+
+
 def build_messages_from_context(
     context: ConversationContext,
     system_prompt: str,
@@ -204,10 +263,13 @@ def build_messages_from_context(
     # 添加系统提示
     messages.append({"role": "system", "content": system_prompt})
 
+    # 过滤历史消息中的工具调用（只保留交互式工具）
+    filtered_history = filter_tool_calls_from_history(context.conversation_history)
+
     # 添加历史消息（保留最近 N 条）
     last_assistant_had_tool_calls = False
 
-    for msg in context.conversation_history[-max_history:]:
+    for msg in filtered_history[-max_history:]:
         role = msg.get("role")
 
         if role == "user":

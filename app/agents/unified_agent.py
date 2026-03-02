@@ -248,16 +248,19 @@ class UnifiedAgent(BaseAgent):
             logger.warning(f"Failed to load boundaries: {e}")
             boundaries_content = "（未加载到操作边界，默认规则：调用工具前不废话）"
             
-        # 分层注入：长期记忆（每次都注入）+ 短期记忆（ContextFilter 选择性注入）
+        # 分层注入：长期记忆（每次都注入）+ 短期记忆（ContextFilter 选择性注入）+ 对话摘要
         from app.services.memory_service import memory_service as _mem_svc
         long_term_memory = _mem_svc.get_long_term_memory(context.user_id)
         recent_memory = context.request_metadata.get("memory_content", "")
+        conversation_summary = context.conversation_summary or ""
 
         memory_parts = []
         if long_term_memory:
             memory_parts.append(f"### 关于用户\n\n{long_term_memory}")
         if recent_memory:
             memory_parts.append(f"### 近期记忆\n\n{recent_memory}")
+        if conversation_summary:
+            memory_parts.append(f"### 对话历史摘要\n\n{conversation_summary}")
 
         if memory_parts:
             memory_content = "\n\n---\n\n".join(memory_parts)

@@ -235,9 +235,10 @@ async def chat(request: ChatRequest):
             current_time=request.current_time  # Pass virtual time for testing
         )
 
-        # Save user message after orchestrator processing
-        conversation_service.add_message(
+        # Save user message after orchestrator processing (triggers summary check)
+        await conversation_service.save_message(
             conversation_id=conversation_id,
+            user_id=request.user_id,
             role="user",
             content=request.message
         )
@@ -253,8 +254,9 @@ async def chat(request: ChatRequest):
         if tool_calls:
             tool_calls_json = json.dumps(tool_calls)
         
-        assistant_msg = conversation_service.add_message(
+        assistant_msg = await conversation_service.save_message(
             conversation_id=conversation_id,
+            user_id=request.user_id,
             role="assistant",
             content=reply,
             tool_calls=tool_calls_json
@@ -424,11 +426,12 @@ async def chat_feedback(request: Dict[str, Any]):
 @router.post("/chat/clear_context")
 async def clear_chat_context(request: Dict[str, Any]):
     """
-    清空聊天上下文 - 记录清空时间戳
+    清空聊天上下文 - 记录清空时间戳并停用摘要
 
     前端聊天界面清空后调用此接口,
     后端记录 chat_cleared_at 时间戳,
     后续 get_recent_context 会过滤掉此时间之前的消息。
+    同时停用用户的对话摘要（is_active = False）。
     数据库中的聊天记录不会被删除，用户仍可通过日期查询历史记录。
     """
     user_id = request.get("user_id")
@@ -437,6 +440,7 @@ async def clear_chat_context(request: Dict[str, Any]):
 
     try:
         from app.services.db import db_service, UserModel
+        from app.services.conversation_summary_service import conversation_summary_service
         from sqlalchemy import or_
         db_service._ensure_initialized()
         session = db_service.get_session()
@@ -449,6 +453,9 @@ async def clear_chat_context(request: Dict[str, Any]):
 
             user.chat_cleared_at = datetime.utcnow()
             session.commit()
+
+            # 停用该用户的所有对话摘要
+            conversation_summary_service.deactivate_summaries(user_id)
 
             return {
                 "status": "success",

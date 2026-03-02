@@ -25,7 +25,9 @@
       "Bash(env)",
       "Bash(wc:*)",
       "Bash(git push:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(__NEW_LINE_eb6bfad6cb8a4bf6__ curl:*)",
+      "Bash(__NEW_LINE_7bfaafe10ffbdef8__ curl:*)"
     ]
   }
 }
