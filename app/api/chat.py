@@ -236,7 +236,7 @@ async def chat(request: ChatRequest):
         )
 
         # Save user message after orchestrator processing (triggers summary check)
-        await conversation_service.save_message(
+        await conversation_service.add_message_with_summary_check(
             conversation_id=conversation_id,
             user_id=request.user_id,
             role="user",
@@ -254,7 +254,7 @@ async def chat(request: ChatRequest):
         if tool_calls:
             tool_calls_json = json.dumps(tool_calls)
         
-        assistant_msg = await conversation_service.save_message(
+        assistant_msg = await conversation_service.add_message_with_summary_check(
             conversation_id=conversation_id,
             user_id=request.user_id,
             role="assistant",
