@@ -4,13 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-UniLife is an AI-powered life scheduling assistant backend using FastAPI and DeepSeek LLM. It implements a **1+1 agent orchestration system** (UnifiedAgent + Observer) with LLM + Tools architecture, featuring a sophisticated "dual-time architecture" for flexible event display with rigid data storage.
+UniLife is an AI-powered life scheduling assistant backend using FastAPI and Qwen LLM. It implements a **1+1 agent orchestration system** (UnifiedAgent + Observer) with LLM + Tools architecture, featuring a sophisticated "dual-time architecture" for flexible event display with rigid data storage.
 
-**Tech Stack**: FastAPI, SQLAlchemy 2.0 (SQLite/PostgreSQL), DeepSeek API, Pydantic v2, APScheduler, OpenAI-compatible Tools API
+**Tech Stack**: FastAPI, SQLAlchemy 2.0 (SQLite/PostgreSQL), Qwen API (OpenAI-compatible), Pydantic v2, APScheduler
 
 **Deployment**: Supports both traditional server (with background tasks) and serverless environments (Railway, Render, etc.)
 
 **Humanization Features**: Per-user soul.md (personality), memory.md (diary), identity.md (AI identity) - see "User Data Files" section
+
+**LLM Provider**: Qwen (via Alibaba DashScope, OpenAI-compatible API)
 
 ## Common Development Commands
 
@@ -173,6 +175,18 @@ Supports 15+ message exchanges with full context. Stores `tool_calls` and `tool`
 
 **Critical**: Messages must include `tool_calls` and `tool` role messages for multi-step reasoning context.
 
+### Conversation Summaries
+
+Rolling summaries for long conversations - reduces context window usage while preserving conversation continuity. See `app/models/conversation_summary.py` and `app/services/conversation_summary_service.py`.
+
+### Project Management
+
+Life projects for organizing related tasks and tracking progress. See `app/api/projects.py` and `app/models/project.py`.
+
+### Device & Sync
+
+Cross-device data synchronization for seamless multi-device experience. See `app/api/devices.py` and `app/api/sync.py`.
+
 ### User Data Files (Per-User Personalization)
 
 Each user has a dedicated directory at `data/users/{user_id}/` containing:
@@ -211,7 +225,7 @@ identity = identity_service.get_identity(user_id)
 
 ## Tool Registration Pattern
 
-All 26 tools are registered in `app/agents/tools.py` using:
+All 33 tools are registered in `app/agents/tools.py` using:
 
 ```python
 tool_registry.register(
@@ -274,9 +288,10 @@ See `app/agents/energy_evaluator.py`, `app/agents/smart_scheduler.py`
 Required `.env` variables:
 ```bash
 # LLM Configuration (REQUIRED)
-DEEPSEEK_API_KEY=sk-***           # REQUIRED - LLM provider
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-DEEPSEEK_MODEL=deepseek-chat
+QWEN_API_KEY=your_qwen_api_key    # REQUIRED - LLM provider
+QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+QWEN_MODEL=qwen3-max              # Main model for agents
+QWEN_FILTER_MODEL=qwen-flash      # Fast model for context filtering
 
 # Database
 DB_TYPE=sqlite                    # or postgresql
@@ -295,6 +310,17 @@ DEBUG=True
 
 # Serverless Deployment (optional)
 SERVERLESS=True                   # Set to disable background tasks in serverless env
+
+# APNs Push Notifications (optional)
+APNS_KEY_ID=                      # Apple Push Notification Key ID
+APNS_TEAM_ID=                     # Apple Developer Team ID
+APNS_KEY_PATH=                    # Path to .p8 key file
+APNS_BUNDLE_ID=                   # App bundle identifier
+APNS_USE_SANDBOX=True             # Use sandbox or production
+
+# WeChat Integration (optional)
+WECHAT_WEBHOOK_URL=http://localhost:3001/api/v1/chat
+WECHAT_SECRET_KEY=your_webhook_secret
 ```
 
 Configuration is managed by `app/config.py` using `pydantic-settings`.
@@ -302,13 +328,14 @@ Configuration is managed by `app/config.py` using `pydantic-settings`.
 ## Important Architecture Notes
 
 1. **Migration Strategy**: Python scripts in `migrations/` (not Alembic) - run in version order
-2. **LLM Provider**: DeepSeek API (OpenAI-compatible), supports full Tools API
+2. **LLM Provider**: Qwen API (OpenAI-compatible via DashScope), supports full Tools API - can be switched to other OpenAI-compatible providers
 3. **Retry Logic**: Exponential backoff with 3 retries, 10-min total timeout in `app/services/llm.py`
 4. **Time Zone**: Uses `pytz` for timezone handling
 5. **Database**: Async SQLAlchemy 2.0 with SQLite for dev, PostgreSQL for production
 6. **Serverless Mode**: Set `SERVERLESS=True` to disable background task scheduler
 7. **User Data Storage**: Per-user files in `data/users/{user_id}/` (soul.md, memory.md, identity.md)
 8. **Agent Mode**: Uses 1+1 architecture (UnifiedAgent + Observer), not 4-layer
+9. **Push Notifications**: APNs integration for iOS push notifications (configure via `APNS_*` env vars)
 
 ## API Structure
 
@@ -339,15 +366,19 @@ Configuration is managed by `app/config.py` using `pydantic-settings`.
 - `app/models/user_profile.py` - Simplified user preferences
 - `app/models/identity.py` - AI identity (name, emoji, creature, vibe)
 - `app/models/conversation.py` - Conversation persistence
+- `app/models/conversation_summary.py` - Rolling summary model
+- `app/models/project.py` - Life Project model
 
 **User Data Services** (per-user files):
 - `app/services/soul_service.py` - soul.md management
 - `app/services/memory_service.py` - memory.md (diary) management
 - `app/services/identity_service.py` - identity.md management
 - `app/services/user_data_service.py` - Base file operations
+- `app/services/conversation_summary_service.py` - Summary management
+- `app/services/notification_service.py` - Push notifications
 
 **Tools & Services**:
-- `app/agents/tools.py` - Registered tools (30+)
+- `app/agents/tools.py` - Registered tools (33)
 - `app/services/llm.py` - LLM wrapper with retry
 - `app/services/prompt.py` - Prompt template system
 - `app/services/virtual_expansion.py` - Virtual event expansion for recurring events
@@ -361,6 +392,7 @@ Configuration is managed by `app/config.py` using `pydantic-settings`.
 - `app/api/notifications.py` - Notifications
 - `app/api/habits.py` - Habit management
 - `app/api/sync.py` - Data synchronization
+- `app/api/projects.py` - Projects API
 - `app/main.py` - Application entry point
 
 **Background Tasks**:
