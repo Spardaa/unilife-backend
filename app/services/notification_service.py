@@ -6,6 +6,7 @@ Designed to work with the Device registry for token management.
 """
 import httpx
 import json
+import time as _time
 import asyncio
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -92,6 +93,15 @@ class NotificationService:
         self.apns_team_id = getattr(settings, 'APNS_TEAM_ID', None)
         self.apns_bundle_id = getattr(settings, 'APNS_BUNDLE_ID', None)
         self.apns_use_sandbox = getattr(settings, 'APNS_USE_SANDBOX', True)
+
+        # APNs JWT 缓存 (避免每次推送都读文件 + 签名)
+        self._apns_key_secret: Optional[str] = None   # .p8 文件内容缓存
+        self._apns_jwt_token: Optional[str] = None     # 当前有效的 JWT
+        self._apns_jwt_issued_at: float = 0            # JWT 签发时间戳
+        self._apns_jwt_ttl: int = 45 * 60              # JWT 缓存 45 分钟
+
+        # httpx HTTP/2 客户端 (长连接复用)
+        self._http_client: Optional[httpx.AsyncClient] = None
 
         # Templates
         self.templates: Dict[str, NotificationTemplate] = BUILTIN_TEMPLATES.copy()
@@ -287,37 +297,31 @@ class NotificationService:
             record.error_message = str(e)
             return self._save_record(record)
 
-    async def _send_apns(
-        self,
-        record: NotificationRecord,
-        device: DeviceDB
-    ) -> NotificationRecord:
+    def _get_apns_token(self) -> str:
         """
-        Send notification via Apple Push Notification Service (APNs)
+        获取有效的 APNs JWT Token（带缓存）
+        
+        JWT 有效期缓存 45 分钟（Apple 允许最长 60 分钟），
+        仅在过期时才重新读取 .p8 密钥文件并重新签名。
         """
-        try:
-            from app.config import settings
-            import time
-            import json
-            import asyncio
-            from pathlib import Path
-            from jose import jwt
-
-            # Check if APNs is configured
-            if not all([settings.apns_key_id, settings.apns_team_id, settings.apns_key_path, settings.apns_bundle_id]):
-                print("[APNs] Configuration missing, falling back to mock send.")
-                return await self._send_apns_mock(record, device)
-
-            # Resolve key path
+        from pathlib import Path
+        from jose import jwt
+        
+        now = _time.time()
+        
+        # 如果缓存的 Token 仍然有效，直接返回
+        if self._apns_jwt_token and (now - self._apns_jwt_issued_at) < self._apns_jwt_ttl:
+            return self._apns_jwt_token
+        
+        # 首次调用或缓存过期：读取密钥文件（也做缓存）
+        if not self._apns_key_secret:
             key_path = Path(settings.apns_key_path)
             if not key_path.exists():
-                # Try relative to project root if not found
                 root_path = Path.cwd()
                 potential_path = root_path / settings.apns_key_path
                 if potential_path.exists():
                     key_path = potential_path
                 else:
-                    # Try removing first component if it's 'unilife-backend'
                     parts = list(Path(settings.apns_key_path).parts)
                     if parts and parts[0] == "unilife-backend":
                         potential_path = root_path / Path(*parts[1:])
@@ -325,27 +329,63 @@ class NotificationService:
                             key_path = potential_path
             
             if not key_path.exists():
-                record.status = NotificationStatus.FAILED
-                record.error_message = f"APNs key file not found at {settings.apns_key_path}"
-                print(f"[APNs] Key file not found: {key_path}")
-                return self._save_record(record)
-
-            # Generate JWT
-            with open(key_path, "r") as f:
-                secret = f.read()
-
-            algorithm = "ES256"
-            headers = {
-                "alg": algorithm,
-                "kid": settings.apns_key_id
-            }
-            payload_jwt = {
-                "iss": settings.apns_team_id,
-                "iat": int(time.time())
-            }
+                raise FileNotFoundError(f"APNs key file not found at {settings.apns_key_path}")
             
-            # Using python-jose
-            token = jwt.encode(payload_jwt, secret, algorithm=algorithm, headers=headers)
+            with open(key_path, "r") as f:
+                self._apns_key_secret = f.read()
+            print(f"[APNs] Loaded .p8 key file from {key_path}")
+        
+        # 签发新 JWT
+        algorithm = "ES256"
+        headers = {"alg": algorithm, "kid": settings.apns_key_id}
+        payload_jwt = {"iss": settings.apns_team_id, "iat": int(now)}
+        
+        self._apns_jwt_token = jwt.encode(
+            payload_jwt, self._apns_key_secret,
+            algorithm=algorithm, headers=headers
+        )
+        self._apns_jwt_issued_at = now
+        print(f"[APNs] JWT token refreshed (valid for {self._apns_jwt_ttl // 60} min)")
+        
+        return self._apns_jwt_token
+
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        """获取共享的 HTTP/2 异步客户端（长连接复用）"""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(
+                http2=True,
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                limits=httpx.Limits(
+                    max_keepalive_connections=20,
+                    max_connections=50
+                )
+            )
+        return self._http_client
+
+    async def _send_apns(
+        self,
+        record: NotificationRecord,
+        device: DeviceDB
+    ) -> NotificationRecord:
+        """
+        Send notification via Apple Push Notification Service (APNs)
+        
+        使用 httpx HTTP/2 长连接 + JWT 缓存，替代原来的 curl 子进程方案。
+        """
+        try:
+            # Check if APNs is configured
+            if not all([settings.apns_key_id, settings.apns_team_id, settings.apns_key_path, settings.apns_bundle_id]):
+                print("[APNs] Configuration missing, falling back to mock send.")
+                return await self._send_apns_mock(record, device)
+
+            # 获取缓存的 JWT Token（过期时自动刷新）
+            try:
+                token = self._get_apns_token()
+            except FileNotFoundError as e:
+                record.status = NotificationStatus.FAILED
+                record.error_message = str(e)
+                print(f"[APNs] {e}")
+                return self._save_record(record)
 
             # Determine endpoint
             endpoint = "https://api.development.push.apple.com" if settings.apns_use_sandbox else "https://api.push.apple.com"
@@ -361,61 +401,42 @@ class NotificationService:
                 "badge": record.payload.badge or 1
             }
             
+            # Add platform-specific fields
+            if record.payload.category:
+                aps["category"] = record.payload.category
+            
             # Add custom data
             full_payload = {"aps": aps}
             if record.payload.data:
                 full_payload.update(record.payload.data)
-                
-            # Add platform-specific fields
-            if record.payload.category:
-                aps["category"] = record.payload.category
 
-            print(f"[APNs] Sending to {device.token[:8]}... via curl")
+            print(f"[APNs] Sending to {device.token[:8]}... via httpx")
             
-            cmd = [
-                "curl",
-                "--http2",
-                "-s",  # Silent
-                "-o", "/dev/null", # Output to null
-                "-w", "%{http_code}", # Write http code
-                "-d", json.dumps(full_payload),
-                "-H", f"apns-topic: {settings.apns_bundle_id}",
-                "-H", "apns-push-type: alert",
-                "-H", "content-type: application/json",
-                "-H", f"authorization: bearer {token}",
-                url
-            ]
+            # 使用 httpx HTTP/2 异步请求（长连接复用，无子进程开销）
+            client = await self._get_http_client()
+            headers = {
+                "apns-topic": settings.apns_bundle_id,
+                "apns-push-type": "alert",
+                "content-type": "application/json",
+                "authorization": f"bearer {token}"
+            }
             
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
+            response = await client.post(url, json=full_payload, headers=headers)
+            status_code = response.status_code
             
-            stdout, stderr = await process.communicate()
-            
-            status_code_str = stdout.decode().strip()
-            stderr_output = stderr.decode().strip() if stderr else ""
-            
-            # Handle empty status code (connection failure)
-            if not status_code_str or status_code_str == "000":
-                record.status = NotificationStatus.FAILED
-                record.error_message = f"APNs Connection Failed: {stderr_output or 'No response from server'}"
-                print(f"[APNs] Connection failed. stderr: {stderr_output}")
-                print(f"[APNs] Command was: curl --http2 ... {url}")
-            elif status_code_str == "200":
+            if status_code == 200:
                 record.status = NotificationStatus.SENT
                 record.sent_at = datetime.utcnow()
-                print(f"[APNs] Sent successfully via curl. Status: 200. Token: {device.token[:10]}...")
+                print(f"[APNs] Sent successfully. Status: 200. Token: {device.token[:10]}...")
             else:
+                response_body = response.text
                 record.status = NotificationStatus.FAILED
-                record.error_message = f"APNs Error {status_code_str}: {stderr_output or 'Unknown error'}"
-                print(f"[APNs] Failed to send via curl. Status: {status_code_str}. Error: {stderr_output}")
-                print(f"[APNs] Command: {' '.join(cmd)}")
+                record.error_message = f"APNs Error {status_code}: {response_body}"
+                print(f"[APNs] Failed. Status: {status_code}. Body: {response_body}")
                 
                 # 410 = token 永久失效（App 已卸载或 token 已更新）
                 # Apple 官方要求收到 410 后停止向该 token 发送推送
-                if status_code_str == "410":
+                if status_code == 410:
                     try:
                         with self.get_session() as session:
                             db_device = session.query(DeviceDB).filter(DeviceDB.id == device.id).first()
@@ -425,6 +446,12 @@ class NotificationService:
                                 print(f"[APNs] Deactivated expired device {device.token[:10]}...")
                     except Exception as deactivate_err:
                         print(f"[APNs] Failed to deactivate device: {deactivate_err}")
+                
+                # 403 = JWT 被拒绝，可能是 token 过期了，清除缓存让下次刷新
+                if status_code == 403:
+                    self._apns_jwt_token = None
+                    self._apns_jwt_issued_at = 0
+                    print(f"[APNs] JWT rejected, cache cleared for next retry")
 
             return self._save_record(record)
 
@@ -519,36 +546,70 @@ class NotificationService:
             return NotificationRecord(**refreshed.to_dict()) if refreshed else record
 
     async def process_pending_notifications(self):
-        """Process pending notifications scheduled for now or past"""
+        """Process pending notifications scheduled for now or past (CAS防重)"""
         self._ensure_initialized()
         
-        # 1. Get pending records
-        pending_records = []
+        # 1. 原子性地将 PENDING → PROCESSING，防止多 Worker 重复拿取
+        claimed_ids = []
         with self.get_session() as session:
             now = datetime.utcnow()
-            rows = session.query(NotificationRecordDB).filter(
+            # 先查询符合条件的记录 ID
+            rows = session.query(NotificationRecordDB.id).filter(
                 NotificationRecordDB.status == NotificationStatus.PENDING.value,
                 NotificationRecordDB.scheduled_for <= now
             ).all()
-            pending_records = [NotificationRecord(**r.to_dict()) for r in rows]
+            candidate_ids = [r[0] for r in rows]
+            
+            if not candidate_ids:
+                return
+            
+            # 原子更新: 仅更新仍然是 PENDING 的记录为 PROCESSING
+            updated = session.query(NotificationRecordDB).filter(
+                NotificationRecordDB.id.in_(candidate_ids),
+                NotificationRecordDB.status == NotificationStatus.PENDING.value
+            ).update(
+                {"status": "processing"},
+                synchronize_session="fetch"
+            )
+            session.commit()
+            
+            if updated == 0:
+                return
+            
+            # 重新拉取被本 Worker 成功锁定的记录
+            claimed_rows = session.query(NotificationRecordDB).filter(
+                NotificationRecordDB.id.in_(candidate_ids),
+                NotificationRecordDB.status == "processing"
+            ).all()
+            claimed_ids = [r.id for r in claimed_rows]
+            pending_records = [NotificationRecord(**r.to_dict()) for r in claimed_rows]
             
         if not pending_records:
             return
             
-        print(f"[Notification] Processing {len(pending_records)} pending notifications")
+        print(f"[Notification] Processing {len(pending_records)} pending notifications (CAS claimed)")
         
-        # 2. Process each record
+        # 2. 批量获取所有相关设备，避免 N+1 查询
+        device_ids = list(set(r.device_id for r in pending_records if r.device_id))
+        device_map = {}
+        if device_ids:
+            with self.get_session() as session:
+                devices = session.query(DeviceDB).filter(
+                    DeviceDB.id.in_(device_ids)
+                ).all()
+                # 需要在 session 内提取数据，避免 detached 问题
+                for d in devices:
+                    device_map[d.id] = d
+                # 保持 session 打开以便后续使用
+                session.expunge_all()
+        
+        # 3. 逐条发送
         for record in pending_records:
             try:
-                # Get device info
-                device = None
-                with self.get_session() as session:
-                    if record.device_id:
-                        device = session.query(DeviceDB).filter(DeviceDB.id == record.device_id).first()
+                device = device_map.get(record.device_id) if record.device_id else None
                 
                 if device:
                     print(f"[Notification] Sending pending notification {record.id} to device {device.id}")
-                    # Send (will update status and save)
                     await self._send_to_device(record, device)
                 else:
                     print(f"[Notification] Device {record.device_id} not found for pending notification {record.id}")

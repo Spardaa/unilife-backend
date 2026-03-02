@@ -162,8 +162,16 @@ class BackgroundTaskScheduler:
             print(f"[Scheduler] Error checking notifications: {e}")
     
     async def _process_pending_notifications(self):
-        """处理待发送的通知"""
+        """处理待发送的通知（含分布式锁防重）"""
         try:
+            # 使用与 _check_event_reminders 相同的锁机制，防止多 Worker 重复处理
+            user_tz = pytz.timezone("Asia/Shanghai")
+            current_minute = datetime.now(user_tz).strftime('%Y%m%d%H%M')
+            lock_key = f"process_pending_notifications:{current_minute}"
+            
+            if not self._acquire_scheduler_lock(lock_key):
+                return  # 其他 Worker 已抢占，跳过本轮
+            
             from app.services.notification_service import notification_service
             await notification_service.process_pending_notifications()
         except Exception as e:

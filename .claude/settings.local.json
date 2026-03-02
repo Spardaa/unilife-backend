@@ -24,7 +24,8 @@
       "Bash(ping:*)",
       "Bash(env)",
       "Bash(wc:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(git checkout:*)"
     ]
   }
 }

@@ -256,25 +256,20 @@ class NotificationAgent:
             )
             if recent_convs:
                 conv = recent_convs[0]
-            else:
-                # 没有最近对话时，新建一个对话，确保推送内容不会丢失
-                conv = conversation_service.create_conversation(
-                    user_id=user_id,
-                    title="UniLife 通知"
+                conversation_service.add_message(
+                    conversation_id=conv.id,
+                    role="assistant",
+                    content=body,
+                    extra_metadata=json.dumps({
+                        "source": "notification_agent",
+                        "notification_type": category,
+                        "auto_generated": True
+                    })
                 )
-                logger.info(f"Created new conversation {conv.id} for notification injection (user {user_id})")
-
-            conversation_service.add_message(
-                conversation_id=conv.id,
-                role="assistant",
-                content=body,
-                extra_metadata=json.dumps({
-                    "source": "notification_agent",
-                    "notification_type": category,
-                    "auto_generated": True
-                })
-            )
-            logger.info(f"Message injected into conversation {conv.id} for user {user_id}")
+                logger.info(f"Message injected into conversation {conv.id} for user {user_id}")
+            else:
+                # 用户近 3 天无对话（不活跃），仅发推送，不创建僵尸对话
+                logger.info(f"No recent conversation for user {user_id}, skipping message injection (push already sent)")
         except Exception as e:
             logger.warning(f"Failed to inject message into conversation: {e}")
 
