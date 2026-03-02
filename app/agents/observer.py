@@ -3,8 +3,9 @@ Observer Agent - 观察者 (简化版)
 负责从用户行为中学习核心偏好
 """
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
+import pytz
 
 from app.services.llm import llm_service
 from app.services.prompt import prompt_service
@@ -50,22 +51,38 @@ class ObserverAgent(BaseAgent):
             Dict containing the updates or None
         """
         # 收集当天的对话和事件
+        # 修复：使用 get_user_message_history 替代 get_recent_context
+        # 因为后者需要有效的 conversation_id，空字符串会直接返回空
         try:
-            context_messages = await conversation_service.get_recent_context(
+            context_messages = conversation_service.get_user_message_history(
                 user_id=user_id,
-                conversation_id="",
-                hours=24,
-                max_messages=200
+                limit=200
             )
+            # 过滤24小时内的消息
+            user_tz = pytz.timezone("Asia/Shanghai")
+            now = datetime.now(user_tz)
+            cutoff = now - timedelta(hours=24)
+            if context_messages:
+                context_messages = [
+                    m for m in context_messages
+                    if m.created_at.replace(tzinfo=pytz.UTC).astimezone(user_tz) >= cutoff
+                ]
         except Exception:
             context_messages = []
 
+        # 修复：将字符串日期转换为 datetime 对象
         try:
             from app.services.db import db_service
+            user_tz = pytz.timezone("Asia/Shanghai")
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            dt = user_tz.localize(dt)
+            start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+
             today_events = await db_service.get_events(
                 user_id=user_id,
-                start_date=date_str,
-                end_date=date_str
+                start_date=start_dt,
+                end_date=end_dt
             )
         except Exception:
             today_events = []
@@ -198,15 +215,20 @@ class ObserverAgent(BaseAgent):
 
     # ============ 内部方法 ============
 
-    def _build_diary_context(self, messages: List[Dict], events: List[Dict]) -> str:
+    def _build_diary_context(self, messages: List, events: List) -> str:
         """构建日记生成所需的上下文"""
         parts = []
 
         if messages:
             parts.append("### 对话摘要")
             for msg in messages:
-                role = msg.get("role", "")
-                content = msg.get("content", "")
+                # 支持字典和对象两种形式
+                if hasattr(msg, 'role'):
+                    role = msg.role
+                    content = msg.content or ""
+                else:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
                 if role == "user":
                     short = content[:200] + "..." if len(content) > 200 else content
                     parts.append(f"用户: {short}")
@@ -217,8 +239,13 @@ class ObserverAgent(BaseAgent):
         if events:
             parts.append("\n### 今日日程")
             for e in events:
-                title = e.get("title", "")
-                status = e.get("status", "")
+                # 支持字典和对象两种形式
+                if hasattr(e, 'title'):
+                    title = e.title or ""
+                    status = getattr(e, 'status', 'pending')
+                else:
+                    title = e.get("title", "")
+                    status = e.get("status", "")
                 parts.append(f"- {title} [{status}]")
 
         return "\n".join(parts) if parts else "今天没有特别的互动。"

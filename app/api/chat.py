@@ -5,7 +5,7 @@ Chat API - Conversational interface for UniLife (多智能体架构版)
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.schemas.chat import (
     ChatRequest, ChatResponse, ActionResult,
@@ -14,9 +14,141 @@ from app.schemas.chat import (
 from app.agents.orchestrator import agent_orchestrator
 from app.services.snapshot import snapshot_manager
 from app.services.conversation_service import conversation_service
+import pytz
 
 # Hardcoded daily limit for AI requests
 MAX_DAILY_AI_REQUESTS = 50
+
+
+async def handle_test_observer_command(
+    user_id: str,
+    conversation_id: str,
+    message: str
+) -> ChatResponse:
+    """
+    处理 /test_observer 命令
+    触发一次 Observer 的 daily_review 方法，并输出诊断信息
+    用法: /test_observer 或 /test_observer 2026-03-01
+    """
+    from app.agents.observer import observer_agent
+    from app.services.db import db_service
+
+    # 解析可选的日期参数
+    parts = message.strip().split()
+    if len(parts) > 1:
+        date_str = parts[1]
+    else:
+        user_tz = pytz.timezone("Asia/Shanghai")
+        date_str = datetime.now(user_tz).strftime("%Y-%m-%d")
+
+    # === 诊断阶段：检查数据源 ===
+    diagnostics = []
+
+    # 1. 检查对话历史 - 修复：使用 get_user_message_history 替代 get_recent_context
+    # 因为后者需要有效的 conversation_id，空字符串会直接返回空
+    try:
+        context_messages = conversation_service.get_user_message_history(
+            user_id=user_id,
+            limit=200
+        )
+        # 过滤24小时内的消息
+        user_tz = pytz.timezone("Asia/Shanghai")
+        now = datetime.now(user_tz)
+        cutoff = now - timedelta(hours=24)
+        if context_messages:
+            context_messages = [
+                m for m in context_messages
+                if m.created_at.replace(tzinfo=pytz.UTC).astimezone(user_tz) >= cutoff
+            ]
+        msg_count = len(context_messages) if context_messages else 0
+        diagnostics.append(f"📝 对话消息数: {msg_count}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        diagnostics.append(f"📝 对话消息数: 获取失败 - {str(e)}")
+        context_messages = None
+
+    # 2. 检查当日事件 - 修复：将字符串日期转换为 datetime 对象
+    try:
+        user_tz = pytz.timezone("Asia/Shanghai")
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        dt = user_tz.localize(dt)
+        start_dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        today_events = await db_service.get_events(
+            user_id=user_id,
+            start_date=start_dt,
+            end_date=end_dt
+        )
+        event_count = len(today_events) if today_events else 0
+        diagnostics.append(f"📅 当日事件数: {event_count}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        diagnostics.append(f"📅 当日事件数: 获取失败 - {str(e)}")
+        today_events = None
+
+    # 3. 检查 soul.md
+    try:
+        from app.services.soul_service import soul_service
+        soul = soul_service.get_soul(user_id)
+        soul_status = f"{len(soul)} 字符" if soul else "不存在"
+        diagnostics.append(f"🧠 soul.md: {soul_status}")
+    except Exception as e:
+        diagnostics.append(f"🧠 soul.md: 获取失败 - {str(e)}")
+
+    # 4. 检查 memory.md
+    try:
+        from app.services.memory_service import memory_service
+        memory = memory_service.get_memory(user_id)
+        memory_status = f"{len(memory)} 字符" if memory else "不存在"
+        diagnostics.append(f"📔 memory.md: {memory_status}")
+    except Exception as e:
+        diagnostics.append(f"📔 memory.md: 获取失败 - {str(e)}")
+
+    # === 执行 Observer ===
+    try:
+        result = await observer_agent.daily_review(
+            user_id=user_id,
+            date_str=date_str
+        )
+
+        if result:
+            reply = f"✅ Observer daily_review 已执行 (日期: {date_str})\n\n"
+            reply += "## 诊断信息\n" + "\n".join(diagnostics) + "\n\n"
+            reply += f"## 执行结果\n{result}"
+        else:
+            reply = f"⚠️ Observer 返回空 (日期: {date_str})\n\n"
+            reply += "## 诊断信息\n" + "\n".join(diagnostics) + "\n\n"
+            reply += "**可能原因**:\n"
+            reply += "- 对话消息数 = 0 且 当日事件数 = 0\n"
+            reply += "- LLM 响应解析失败"
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        reply = f"❌ 执行 daily_review 时出错: {str(e)}\n\n"
+        reply += "## 诊断信息\n" + "\n".join(diagnostics)
+
+    # 保存消息到对话历史
+    conversation_service.add_message(
+        conversation_id=conversation_id,
+        role="user",
+        content=message
+    )
+    conversation_service.add_message(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=reply
+    )
+
+    return ChatResponse(
+        reply=reply,
+        actions=[],
+        snapshot_id=None,
+        conversation_id=conversation_id
+    )
 
 router = APIRouter()
 
@@ -85,6 +217,14 @@ async def chat(request: ChatRequest):
                 actions=[],
                 snapshot_id=None,
                 conversation_id=conversation_id
+            )
+
+        # 拦截测试命令 (不消耗 AI 请求配额)
+        if request.message.strip().startswith("/test_observer"):
+            return await handle_test_observer_command(
+                user_id=request.user_id,
+                conversation_id=conversation_id,
+                message=request.message
             )
 
         # Call Agent Orchestrator (before saving user message to avoid duplication)

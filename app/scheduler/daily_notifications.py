@@ -15,6 +15,7 @@ Daily Notifications - 每日通知调度模块
 from typing import List, Dict, Any, Optional
 from datetime import datetime, date, timedelta, time
 import asyncio
+import pytz
 
 from app.utils.awake_window import AwakeWindowChecker, get_user_awake_checker
 from app.agents.notification_agent import notification_agent
@@ -314,18 +315,27 @@ class DailyNotificationScheduler:
         """获取用户最近的对话上下文摘要"""
         try:
             from app.services.conversation_service import conversation_service
-            messages = await conversation_service.get_recent_context(
+            # 修复：使用 get_user_message_history 替代 get_recent_context
+            # 因为后者需要有效的 conversation_id，空字符串会直接返回空
+            messages = conversation_service.get_user_message_history(
                 user_id=user_id,
-                conversation_id="",
-                hours=24,
-                max_messages=10
+                limit=10
             )
+            # 过滤24小时内的消息
+            user_tz = pytz.timezone("Asia/Shanghai")
+            now = datetime.now(user_tz)
+            cutoff = now - timedelta(hours=24)
+            if messages:
+                messages = [
+                    m for m in messages
+                    if m.created_at.replace(tzinfo=pytz.UTC).astimezone(user_tz) >= cutoff
+                ]
             if not messages:
                 return ""
             lines = []
             for msg in messages:
-                role = msg.get("role", "")
-                content = msg.get("content", "")
+                role = msg.role if hasattr(msg, 'role') else msg.get("role", "")
+                content = msg.content if hasattr(msg, 'content') else msg.get("content", "")
                 if role in ("user", "assistant") and content:
                     short = content[:60] + "..." if len(content) > 60 else content
                     lines.append(f"[{role}] {short}")

@@ -84,7 +84,32 @@ class MemoryService:
         match = re.search(r"## (?:近期日记|Recent Diary)\s*\n(.*)", full, re.DOTALL)
         if not match:
             return ""
-        return match.group(1).strip()
+
+        diary_body = match.group(1)
+
+        # 如果 days <= 0，返回所有日记
+        if days <= 0:
+            return diary_body.strip()
+
+        # 分割条目并过滤最近 N 天
+        raw_entries = re.split(r"(?=### \d{4}-\d{2}-\d{2})", diary_body)
+        cutoff = datetime.now() - timedelta(days=days)
+
+        recent_entries = []
+        for entry in raw_entries:
+            entry = entry.strip()
+            if not entry:
+                continue
+            date_m = re.match(r"### (\d{4}-\d{2}-\d{2})", entry)
+            if date_m:
+                try:
+                    entry_date = datetime.strptime(date_m.group(1), "%Y-%m-%d")
+                    if entry_date >= cutoff:
+                        recent_entries.append(entry)
+                except ValueError:
+                    continue
+
+        return "\n\n".join(recent_entries)
 
     def get_weekly_summary(self, user_id: str) -> str:
         """提取历史摘要部分"""
@@ -215,14 +240,27 @@ class MemoryService:
 
         new_block = f"\n### {date_str} {weekday}\n{entry}\n"
 
-        # 插入到 Recent Diary 末尾
-        if "## 近期日记" in full or "## Recent Diary" in full:
+        # 检查是否已存在该日期的条目
+        date_pattern = rf"### {re.escape(date_str)}[^\n]*\n"
+        if re.search(date_pattern, full):
+            # 已存在，替换该条目
+            full = re.sub(
+                rf"(### {re.escape(date_str)}[^\n]*\n).*?(?=\n### |\n## |\Z)",
+                new_block.rstrip() + "\n",
+                full,
+                flags=re.DOTALL
+            )
+            logger.info(f"Diary entry replaced for user {user_id} on {date_str}")
+        elif "## 近期日记" in full or "## Recent Diary" in full:
+            # 不存在，追加到末尾
             full = full.rstrip() + "\n" + new_block
+            logger.info(f"Diary appended for user {user_id} on {date_str}")
         else:
+            # 没有 Recent Diary 区块，创建一个
             full += f"\n## 近期日记\n{new_block}"
+            logger.info(f"Diary section created and entry appended for user {user_id} on {date_str}")
 
         user_data_service.write_file(user_id, MEMORY_FILENAME, full)
-        logger.info(f"Diary appended for user {user_id} on {date_str}")
 
     # ---- 精炼 / 老化 ----
 

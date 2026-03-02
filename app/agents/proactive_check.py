@@ -15,6 +15,7 @@ Proactive Check Agent - AI 自主心跳检查（统一推送引擎）
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
+import pytz
 
 from app.services.llm import llm_service
 from app.services.memory_service import memory_service
@@ -288,18 +289,27 @@ class ProactiveCheckAgent:
     async def _get_recent_context_summary(self, user_id: str) -> str:
         """获取最近对话的简要摘要"""
         try:
-            messages = await conversation_service.get_recent_context(
+            # 修复：使用 get_user_message_history 替代 get_recent_context
+            # 因为后者需要有效的 conversation_id，空字符串会直接返回空
+            messages = conversation_service.get_user_message_history(
                 user_id=user_id,
-                conversation_id="",
-                hours=24,
-                max_messages=10
+                limit=10
             )
+            # 过滤24小时内的消息
+            user_tz = pytz.timezone("Asia/Shanghai")
+            now = datetime.now(user_tz)
+            cutoff = now - timedelta(hours=24)
+            if messages:
+                messages = [
+                    m for m in messages
+                    if m.created_at.replace(tzinfo=pytz.UTC).astimezone(user_tz) >= cutoff
+                ]
             if not messages:
                 return ""
             lines = []
             for msg in messages:
-                role = msg.get("role", "")
-                content = msg.get("content", "")
+                role = msg.role if hasattr(msg, 'role') else msg.get("role", "")
+                content = msg.content if hasattr(msg, 'content') else msg.get("content", "")
                 if role in ("user", "assistant") and content:
                     short = content[:60] + "..." if len(content) > 60 else content
                     lines.append(f"[{role}] {short}")
