@@ -547,6 +547,14 @@ class BackgroundTaskScheduler:
             }
             check_type = check_mapping.get(current_hm)
             if check_type:
+                # 获取锁，防止多 Worker 重复推送
+                today_str = datetime.now(pytz.timezone("Asia/Shanghai")).strftime("%Y%m%d")
+                lock_key = f"proactive_check:{user_id}:{check_type}:{today_str}"
+
+                if not self._acquire_scheduler_lock(lock_key):
+                    print(f"[Scheduler] Locked: {check_type} already grabbed for {user_id[:8]}... today")
+                    return
+
                 try:
                     print(f"[Scheduler] Heartbeat [{check_type}] for user {user_id[:8]}...")
                     await proactive_check_agent.run_check(
